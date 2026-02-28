@@ -9,7 +9,6 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import "@uniswap/permit2/src/interfaces/IPermit2.sol";
-import "@uniswap/permit2/src/interfaces/IAllowanceTransfer.sol";
 
 import "@uniswap/v4-core/src/types/PoolKey.sol";
 import "@uniswap/v4-core/src/interfaces/IHooks.sol";
@@ -28,11 +27,10 @@ import "@uniswap/universal-router/contracts/libraries/Commands.sol";
 
 import "./HookFactory.sol";
 import "./SwapHook.sol";
-import "./AsyncSwapHook.sol";
 
 contract MockERC20 is ERC20 {
     constructor() ERC20("Mock Token", "MTK") {
-        _mint(msg.sender, 1000000e18);
+        _mint(msg.sender, 1000_000_000e18);
     }
 
     function mint(address to, uint256 amount) public {
@@ -76,6 +74,10 @@ contract UniswapTest is Test {
         weth = new MockERC20();
         btc = new MockERC20();
         vm.stopBroadcast();
+
+        vm.label(address(usdt), "USDT");
+        vm.label(address(weth), "WETH");
+        vm.label(address(btc), "WBTC");
     }
 
     function testAddLiquidity() public {
@@ -162,27 +164,6 @@ contract UniswapTest is Test {
         });
         positionManager.initializePool(poolKey, sqrtPriceX96);
 
-        IAllowanceTransfer.PermitDetails[] memory details = new IAllowanceTransfer.PermitDetails[](2);
-        details[0] = IAllowanceTransfer.PermitDetails({
-            token: token0,
-            amount: 2**160 - 1,
-            expiration: uint48(block.timestamp + 30 minutes),
-            nonce: uint48(0)
-        });
-        details[1] = IAllowanceTransfer.PermitDetails({
-            token: token1,
-            amount: 2**160 - 1,
-            expiration: uint48(block.timestamp + 30 minutes),
-            nonce: uint48(0)
-        });
-        IAllowanceTransfer.PermitBatch memory permit = IAllowanceTransfer.PermitBatch({
-            details: details,
-            spender: address(positionManager),
-            sigDeadline: block.timestamp + 30 minutes
-        });
-        // bytes memory signature = signPermitBatch(permit, accountPrivateKey);
-        // positionManager.permitBatch(account, permit, signature);
-
         bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
         bytes[] memory mintParams = new bytes[](2);
 
@@ -222,25 +203,6 @@ contract UniswapTest is Test {
 
         // 准备创建代码和构造函数参数
         bytes memory creationCode = type(SwapHook).creationCode;
-        bytes memory constructorArgs = abi.encode(address(poolManager));
-
-        // 查找合适的salt并部署hook
-        (address hookAddress, bytes32 salt) = factory.find(permissions, creationCode, constructorArgs);
-        factory.deployHook(hookAddress, salt, creationCode, constructorArgs);
-
-        return hookAddress;
-    }
-
-    function _createAsyncSwapHook() internal returns (address) {
-        // 部署工厂合约
-        HookFactory factory = new HookFactory();
-        // 设置hook权限
-        uint160 permissions = uint160(
-            Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
-        );
-
-        // 准备创建代码和构造函数参数
-        bytes memory creationCode = type(AsyncSwapHook).creationCode;
         bytes memory constructorArgs = abi.encode(address(poolManager));
 
         // 查找合适的salt并部署hook
@@ -320,70 +282,6 @@ contract UniswapTest is Test {
         vm.stopBroadcast();
     }
 
-    // TODO: 暂时跑不通
-    // function testAsyncSwap() public {
-    //     vm.startBroadcast(account);
-        
-    //     address hookAddress = _createAsyncSwapHook();
-    //     _addLiquidityV4WithHooks(address(weth), address(usdt), 10e18, 30000e18, hookAddress);
-
-    //     usdt.approve(address(permit2), type(uint256).max);
-    //     permit2.approve(address(usdt), address(universalRouter), type(uint160).max, type(uint48).max);
-
-    //     bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
-    //     bytes[] memory inputs = new bytes[](1);
-
-    //     bytes memory actions = abi.encodePacked(uint8(Actions.SWAP_EXACT_IN_SINGLE), uint8(Actions.SETTLE_ALL), uint8(Actions.TAKE_ALL));
-
-    //     bytes[] memory params = new bytes[](3);
-
-    //     uint128 amountIn = 5e18;
-
-    //     (address token0, address token1) = address(weth) < address(usdt) ? (address(weth), address(usdt)) : (address(usdt), address(weth));
-    //     bool zeroForOne = token0 == address(weth);
-    //     console.log("token0 == weth: ", zeroForOne);
-    //     PoolKey memory key = PoolKey({
-    //         currency0: Currency.wrap(token0),
-    //         currency1: Currency.wrap(token1),
-    //         fee: 3000,
-    //         tickSpacing: 60,
-    //         hooks: IHooks(hookAddress)
-    //     });
-    //     params[0] = abi.encode(
-    //         IV4Router.ExactInputSingleParams({
-    //             poolKey: key,
-    //             zeroForOne: !zeroForOne,
-    //             amountIn: amountIn,
-    //             amountOutMinimum: 0,
-    //             hookData: new bytes(0)
-    //         })
-    //     );
-    //     if (zeroForOne) {
-    //         params[1] = abi.encode(key.currency1, amountIn);
-    //         params[2] = abi.encode(key.currency0, 0);
-    //     } else {
-    //         params[1] = abi.encode(key.currency0, amountIn);
-    //         params[2] = abi.encode(key.currency1, 0);
-    //     }
-
-    //     inputs[0] = abi.encode(actions, params);
-
-    //     uint256 balBefore = usdt.balanceOf(account);
-    //     uint256 wethBalBefore = weth.balanceOf(account);
-
-    //     universalRouter.execute(commands, inputs, block.timestamp + 30 minutes);
-    //     uint256 balAfter = usdt.balanceOf(account);
-    //     uint256 wethBalAfter = weth.balanceOf(account);
-
-    //     console.log("usdt balBefore: ", balBefore);
-    //     console.log("usdt balAfter: ", balAfter);
-    //     console.log("usdt diff: ", balBefore - balAfter);
-    //     console.log("weth balBefore: ", wethBalBefore);
-    //     console.log("weth balAfter: ", wethBalAfter);
-    //     console.log("weth diff: ", wethBalAfter - wethBalBefore);
-    //     vm.stopBroadcast();
-    // }
-
     function _addLiquidityV4WithHooks(address tokenA, address tokenB, uint256 tokenAAmount, uint256 tokenBAmount, address hookAddress) internal {
         // ETH 用 0x0000000000000000000000000000000000000000表示
         ERC20(tokenA).approve(address(permit2), type(uint256).max);
@@ -407,25 +305,6 @@ contract UniswapTest is Test {
             hooks: IHooks(hookAddress)
         });
         positionManager.initializePool(poolKey, sqrtPriceX96);
-
-        IAllowanceTransfer.PermitDetails[] memory details = new IAllowanceTransfer.PermitDetails[](2);
-        details[0] = IAllowanceTransfer.PermitDetails({
-            token: token0,
-            amount: 2**160 - 1,
-            expiration: uint48(block.timestamp + 30 minutes),
-            nonce: uint48(0)
-        });
-        details[1] = IAllowanceTransfer.PermitDetails({
-            token: token1,
-            amount: 2**160 - 1,
-            expiration: uint48(block.timestamp + 30 minutes),
-            nonce: uint48(0)
-        });
-        IAllowanceTransfer.PermitBatch memory permit = IAllowanceTransfer.PermitBatch({
-            details: details,
-            spender: address(positionManager),
-            sigDeadline: block.timestamp + 30 minutes
-        });
 
         bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
         bytes[] memory mintParams = new bytes[](2);
@@ -534,190 +413,201 @@ contract UniswapTest is Test {
         params.exactAmount = uint128(amountOut);
     }
 
-    // TODO: 目前这个测试跑不通，后续完善
-    // function testV4Swap() public {
-    //     vm.startBroadcast(account);
+    function testV4SwapExactIn() public {
+        vm.startBroadcast(account);
 
-    //     _addLiquidityV4(address(weth), address(usdt), 100e18, 200000e18);
-    //     _addLiquidityV4(address(btc), address(usdt), 10e18, 700000e18);
+        _addLiquidityV4(address(weth), address(usdt), 1000e18, 2000_000e18);
+        _addLiquidityV4(address(btc), address(usdt), 10e18, 700_000e18);
         
-    //     // 设置通用变量
-    //     uint256 amountInETH = 1e18;             // 1 ETH
-    //     uint256 amountOutUSDC = 500e6;          // 500 USDC
-    //     uint256 maxAmountInETH = 2e18;          // 最大输入2 ETH
+        // 设置通用变量
+        uint256 amountInETH = 1e18;             // 1 ETH
 
-    //     // 批准代币使用权限
-    //     weth.approve(address(permit2), type(uint256).max);
+        // 批准代币使用权限
+        weth.approve(address(permit2), type(uint256).max);
         
-    //     // 给permit2批准UniversalRouter的使用权限
-    //     permit2.approve(address(weth), address(universalRouter), type(uint160).max, type(uint48).max);
+        // 给permit2批准UniversalRouter的使用权限
+        permit2.approve(address(weth), address(universalRouter), type(uint160).max, type(uint48).max);
 
-    //     // 创建池子键值对
-    //     PoolKey memory wethUsdtKey = createPoolKey(address(weth), address(usdt), address(0));
-    //     PoolKey memory btcUsdtKey = createPoolKey(address(btc), address(usdt), address(0));
+        // 创建池子键值对
+        PoolKey memory wethUsdtKey = createPoolKey(address(weth), address(usdt), address(0));
+        PoolKey memory btcUsdtKey = createPoolKey(address(btc), address(usdt), address(0));
         
-    //     // 1. Multi token pair exact input swap (ETH -> USDT -> BTC)
-    //     console.log("==== Multi token pair exact input swap (ETH -> USDT -> BTC) ====");
+        // 1. Multi token pair exact input swap (ETH -> USDT -> BTC)
+        console.log("==== Multi token pair exact input swap (ETH -> USDT -> BTC) ====");
         
-    //     bytes memory commandsExactIn = abi.encodePacked(uint8(Commands.V4_SWAP));
-    //     bytes[] memory inputsExactIn = new bytes[](1);
+        bytes memory commandsExactIn = abi.encodePacked(uint8(Commands.V4_SWAP));
+        bytes[] memory inputsExactIn = new bytes[](1);
         
-    //     // Build actions: SWAP_EXACT_IN + SETTLE_ALL + TAKE_ALL
-    //     bytes memory actionsExactIn = abi.encodePacked(
-    //         uint8(Actions.SWAP_EXACT_IN), 
-    //         uint8(Actions.SETTLE_ALL), 
-    //         uint8(Actions.TAKE_ALL)
-    //     );
-        
-    //     bytes[] memory paramsExactIn = new bytes[](3);
-        
-    //     // Build path
-    //     Currency currencyInExactIn = Currency.wrap(address(weth));
-        
-    //     // Create path array: [ETH -> USDT, USDT -> BTC]
-    //     PathKey[] memory pathExactIn = new PathKey[](2);
-    //     pathExactIn[0] = PathKey(Currency.wrap(address(usdt)), 3000, 60, IHooks(address(0)), bytes(""));
-    //     pathExactIn[1] = PathKey(Currency.wrap(address(btc)), 3000, 60, IHooks(address(0)), bytes(""));
-        
-    //     // Parameters for SWAP_EXACT_IN
-    //     paramsExactIn[0] = abi.encode(
-    //         IV4Router.ExactInputParams({
-    //             currencyIn: currencyInExactIn,
-    //             path: pathExactIn,
-    //             maxHopSlippage: new uint256[](0),
-    //             amountIn: uint128(amountInETH),
-    //             amountOutMinimum: uint128(0)
-    //         })
-    //     );
-        
-    //     // Parameters for SETTLE_ALL (ETH settlement)
-    //     paramsExactIn[1] = abi.encode(currencyInExactIn, amountInETH);
-        
-    //     // Parameters for TAKE_ALL (receive BTC)
-    //     paramsExactIn[2] = abi.encode(Currency.wrap(address(btc)), 0);
-        
-    //     inputsExactIn[0] = abi.encode(actionsExactIn, paramsExactIn);
-        
-    //     // Execute transaction
-    //     uint256 balBeforeExactIn = btc.balanceOf(account);
-    //     universalRouter.execute(commandsExactIn, inputsExactIn, block.timestamp + 30 minutes);
-    //     uint256 balAfterExactIn = btc.balanceOf(account);
-    //     console.log("BTC received: ", balAfterExactIn - balBeforeExactIn);
-        
-    //     // // 3. Single token pair exact output swap (ETH -> USDC)
-    //     // console.log("==== Single token pair exact output swap (ETH -> USDC) ====");
-        
-    //     // bytes memory commandsExactOutSingle = abi.encodePacked(uint8(Commands.V4_SWAP));
-    //     // bytes[] memory inputsExactOutSingle = new bytes[](1);
-        
-    //     // // Build actions: SWAP_EXACT_OUT_SINGLE + SETTLE_ALL + TAKE_ALL
-    //     // bytes memory actionsExactOutSingle = abi.encodePacked(
-    //     //     uint8(Actions.SWAP_EXACT_OUT_SINGLE), 
-    //     //     uint8(Actions.SETTLE_ALL), 
-    //     //     uint8(Actions.TAKE_ALL)
-    //     // );
-        
-    //     // bytes[] memory paramsExactOutSingle = new bytes[](3);
-        
-    //     // // Parameters for SWAP_EXACT_OUT_SINGLE
-    //     // paramsExactOutSingle[0] = abi.encode(
-    //     //     IV4Router.ExactOutputSingleParams({
-    //     //         poolKey: wethUsdtKey,
-    //     //         zeroForOne: address(weth) < address(usdt),  // ETH -> USDC
-    //     //         amountOut: uint128(300e18),
-    //     //         amountInMaximum: uint128(1e18),
-    //     //         hookData: new bytes(0)
-    //     //     })
-    //     // );
-        
-    //     // // Parameters for SETTLE_ALL (ETH settlement)
-    //     // paramsExactOutSingle[1] = abi.encode(Currency.wrap(address(weth)), type(uint256).max);
-        
-    //     // // Parameters for TAKE_ALL (receive USDC)
-    //     // paramsExactOutSingle[2] = abi.encode(Currency.wrap(address(usdt)), 0);
-        
-    //     // inputsExactOutSingle[0] = abi.encode(actionsExactOutSingle, paramsExactOutSingle);
-        
-    //     // // Execute transaction
-    //     // uint256 balBeforeExactOutSingle = usdt.balanceOf(account);
-    //     // universalRouter.execute{value: maxAmountInETH}(commandsExactOutSingle, inputsExactOutSingle, block.timestamp + 30 minutes);
-    //     // uint256 balAfterExactOutSingle = usdt.balanceOf(account);
-    //     // console.log("USDT received: ", balAfterExactOutSingle - balBeforeExactOutSingle);
-        
-    //     // // 4. Multi token pair exact output swap (ETH -> USDC -> BTC)
-    //     // console.log("==== Multi token pair exact output swap (ETH -> USDC -> BTC) ====");
-        
-    //     // bytes memory commandsExactOut = abi.encodePacked(uint8(Commands.V4_SWAP));
-    //     // bytes[] memory inputsExactOut = new bytes[](1);
-        
-    //     // // Build actions: SWAP_EXACT_OUT + SETTLE_ALL + TAKE_ALL
-    //     // bytes memory actionsExactOut = abi.encodePacked(
-    //     //     uint8(Actions.SWAP_EXACT_OUT), 
-    //     //     uint8(Actions.SETTLE_ALL), 
-    //     //     uint8(Actions.TAKE_ALL)
-    //     // );
-        
-    //     // bytes[] memory paramsExactOut = new bytes[](3);
-        
-    //     // // Set target output token
-    //     // Currency currencyOutExactOut = Currency.wrap(btc);
-        
-    //     // // Create reverse path array: BTC <- USDC <- ETH (note path is reverse)
-    //     // PathKey[] memory pathExactOut = new PathKey[](2);
-    //     // pathExactOut[0] = PathKey(Currency.wrap(address(weth)), 3000, 60, IHooks(address(0)), bytes(""));
-    //     // pathExactOut[1] = PathKey(Currency.wrap(address(usdt)), 3000, 60, IHooks(address(0)), bytes(""));
-        
-    //     // // Parameters for SWAP_EXACT_OUT
-    //     // paramsExactOut[0] = abi.encode(
-    //     //     IV4Router.ExactOutputParams({
-    //     //         currencyOut: currencyOutExactOut,
-    //     //         path: pathExactOut,
-    //     //         amountOut: uint128(0.0001e8),
-    //     //         amountInMaximum: uint128(maxAmountInETH)
-    //     //     })
-    //     // );
-        
-    //     // // Parameters for SETTLE_ALL (ETH settlement)
-    //     // paramsExactOut[1] = abi.encode(Currency.wrap(address(weth)), type(uint256).max);
-        
-    //     // // Parameters for TAKE_ALL (receive BTC)
-    //     // paramsExactOut[2] = abi.encode(currencyOutExactOut, 0);
-        
-    //     // inputsExactOut[0] = abi.encode(actionsExactOut, paramsExactOut);
-        
-    //     // // Execute transaction
-    //     // uint256 balBeforeExactOut = IERC20(btc).balanceOf(account);
-    //     // universalRouter.execute(commandsExactOut, inputsExactOut, block.timestamp + 30 minutes);
-    //     // uint256 balAfterExactOut = IERC20(btc).balanceOf(account);
-    //     // console.log("BTC received: ", balAfterExactOut - balBeforeExactOut);
-        
-    //     console.log("All Uniswap V4 swap methods implemented successfully");
-    //     vm.stopBroadcast();
-    // }
-
-
-    function signPermitBatch(IAllowanceTransfer.PermitBatch memory permit, uint256 privateKey) internal view returns (bytes memory signature) {
-        bytes32[] memory permitHashes = new bytes32[](permit.details.length);
-        for (uint256 i = 0; i < permit.details.length; ++i) {
-            permitHashes[i] = keccak256(abi.encode(PERMIT_DETAILS_TYPEHASH, permit.details[i]));
-        }
-
-        bytes32 msgHash = keccak256(
-            abi.encodePacked(
-                "\x19\x01",
-                permit2.DOMAIN_SEPARATOR(),
-                keccak256(
-                    abi.encode(
-                        PERMIT_BATCH_TYPEHASH,
-                        keccak256(abi.encodePacked(permitHashes)),
-                        permit.spender,
-                        permit.sigDeadline
-                    )
-                )
-            )
+        // Build actions: SWAP_EXACT_IN + SETTLE_ALL + TAKE_ALL
+        bytes memory actionsExactIn = abi.encodePacked(
+            uint8(Actions.SWAP_EXACT_IN), 
+            uint8(Actions.SETTLE_ALL), 
+            uint8(Actions.TAKE_ALL)
         );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, msgHash);
-        return bytes.concat(r, s, bytes1(v));
+        
+        bytes[] memory paramsExactIn = new bytes[](3);
+        
+        // Build path
+        Currency currencyInExactIn = Currency.wrap(address(weth));
+        
+        // Create path array: [ETH -> USDT, USDT -> BTC]
+        PathKey[] memory pathExactIn = new PathKey[](2);
+        pathExactIn[0] = PathKey(Currency.wrap(address(usdt)), 3000, 60, IHooks(address(0)), bytes(""));
+        pathExactIn[1] = PathKey(Currency.wrap(address(btc)), 3000, 60, IHooks(address(0)), bytes(""));
+
+        // Parameters for SWAP_EXACT_IN
+        paramsExactIn[0] = abi.encode(
+            IV4Router.ExactInputParams({
+                currencyIn: currencyInExactIn,
+                path: pathExactIn,
+                amountIn: uint128(amountInETH),
+                amountOutMinimum: uint128(0)
+            })
+        );
+        
+        // Parameters for SETTLE_ALL (ETH settlement)
+        paramsExactIn[1] = abi.encode(currencyInExactIn, amountInETH);
+        
+        // Parameters for TAKE_ALL (receive BTC)
+        paramsExactIn[2] = abi.encode(Currency.wrap(address(btc)), 0);
+        
+        inputsExactIn[0] = abi.encode(actionsExactIn, paramsExactIn);
+        
+        // Execute transaction
+        uint256 balBeforeExactIn = btc.balanceOf(account);
+        universalRouter.execute(commandsExactIn, inputsExactIn, block.timestamp + 30 minutes);
+        uint256 balAfterExactIn = btc.balanceOf(account);
+        console.log("BTC received: ", balAfterExactIn - balBeforeExactIn);
+        vm.stopBroadcast();
+    }
+
+    function testV4SwapExactOutSingle() public {
+        vm.startBroadcast(account);
+
+        _addLiquidityV4(address(weth), address(usdt), 1000e18, 2000_000e18);
+        _addLiquidityV4(address(btc), address(usdt), 10e18, 700_000e18);
+        
+        // 设置通用变量
+        uint256 amountInETHMax = 2e18; // 2 ETH
+
+        // 批准代币使用权限
+        weth.approve(address(permit2), type(uint256).max);
+        
+        // 给permit2批准UniversalRouter的使用权限
+        permit2.approve(address(weth), address(universalRouter), type(uint160).max, type(uint48).max);
+
+        // 创建池子键值对
+        PoolKey memory wethUsdtKey = createPoolKey(address(weth), address(usdt), address(0));
+        PoolKey memory btcUsdtKey = createPoolKey(address(btc), address(usdt), address(0));
+        
+        // 3. Single token pair exact output swap (ETH -> USDC)
+        console.log("==== Single token pair exact output swap (ETH -> USDC) ====");
+        
+        bytes memory commandsExactOutSingle = abi.encodePacked(uint8(Commands.V4_SWAP));
+        bytes[] memory inputsExactOutSingle = new bytes[](1);
+        
+        // Build actions: SWAP_EXACT_OUT_SINGLE + SETTLE_ALL + TAKE_ALL
+        bytes memory actionsExactOutSingle = abi.encodePacked(
+            uint8(Actions.SWAP_EXACT_OUT_SINGLE), 
+            uint8(Actions.SETTLE_ALL), 
+            uint8(Actions.TAKE_ALL)
+        );
+        
+        bytes[] memory paramsExactOutSingle = new bytes[](3);
+        
+        // Parameters for SWAP_EXACT_OUT_SINGLE
+        paramsExactOutSingle[0] = abi.encode(
+            IV4Router.ExactOutputSingleParams({
+                poolKey: wethUsdtKey,
+                zeroForOne: address(weth) < address(usdt),  // ETH -> USDC
+                amountOut: uint128(2000e18),
+                amountInMaximum: uint128(amountInETHMax),
+                hookData: new bytes(0)
+            })
+        );
+        
+        // Parameters for SETTLE_ALL (ETH settlement)
+        paramsExactOutSingle[1] = abi.encode(Currency.wrap(address(weth)), type(uint256).max);
+        
+        // Parameters for TAKE_ALL (receive USDC)
+        paramsExactOutSingle[2] = abi.encode(Currency.wrap(address(usdt)), 0);
+        
+        inputsExactOutSingle[0] = abi.encode(actionsExactOutSingle, paramsExactOutSingle);
+        
+        // Execute transaction
+        uint256 balBeforeExactOutSingle = usdt.balanceOf(account);
+        universalRouter.execute(commandsExactOutSingle, inputsExactOutSingle, block.timestamp + 30 minutes);
+        uint256 balAfterExactOutSingle = usdt.balanceOf(account);
+        console.log("USDT received: ", balAfterExactOutSingle - balBeforeExactOutSingle);
+        vm.stopBroadcast();
+    }
+
+    function testV4SwapExactOut() public {
+        vm.startBroadcast(account);
+
+        _addLiquidityV4(address(weth), address(usdt), 1000e18, 2000_000e18);
+        _addLiquidityV4(address(btc), address(usdt), 10e18, 700_000e18);
+        
+        // 设置通用变量
+        uint256 amountInETHMax = 2e18;             // 2 ETH
+
+        // 批准代币使用权限
+        weth.approve(address(permit2), type(uint256).max);
+        
+        // 给permit2批准UniversalRouter的使用权限
+        permit2.approve(address(weth), address(universalRouter), type(uint160).max, type(uint48).max);
+
+        // 创建池子键值对
+        PoolKey memory wethUsdtKey = createPoolKey(address(weth), address(usdt), address(0));
+        PoolKey memory btcUsdtKey = createPoolKey(address(btc), address(usdt), address(0));
+        
+        // Multi token pair exact output swap (ETH -> USDC -> BTC)
+        console.log("==== Multi token pair exact output swap (ETH -> USDC -> BTC) ====");
+        
+        bytes memory commandsExactOut = abi.encodePacked(uint8(Commands.V4_SWAP));
+        bytes[] memory inputsExactOut = new bytes[](1);
+        
+        // Build actions: SWAP_EXACT_OUT + SETTLE_ALL + TAKE_ALL
+        bytes memory actionsExactOut = abi.encodePacked(
+            uint8(Actions.SWAP_EXACT_OUT), 
+            uint8(Actions.SETTLE_ALL), 
+            uint8(Actions.TAKE_ALL)
+        );
+        
+        bytes[] memory paramsExactOut = new bytes[](3);
+        
+        // Set target output token
+        Currency currencyOutExactOut = Currency.wrap(address(btc));
+        
+        // Create reverse path array: BTC <- USDC <- ETH (note path is reverse)
+        PathKey[] memory pathExactOut = new PathKey[](2);
+        pathExactOut[0] = PathKey(Currency.wrap(address(weth)), 3000, 60, IHooks(address(0)), bytes(""));
+        pathExactOut[1] = PathKey(Currency.wrap(address(usdt)), 3000, 60, IHooks(address(0)), bytes(""));
+        
+        // Parameters for SWAP_EXACT_OUT
+        paramsExactOut[0] = abi.encode(
+            IV4Router.ExactOutputParams({
+                currencyOut: currencyOutExactOut,
+                path: pathExactOut,
+                amountOut: uint128(0.01e18),
+                amountInMaximum: uint128(amountInETHMax)
+            })
+        );
+        
+        // Parameters for SETTLE_ALL (ETH settlement)
+        paramsExactOut[1] = abi.encode(Currency.wrap(address(weth)), type(uint256).max);
+        
+        // Parameters for TAKE_ALL (receive BTC)
+        paramsExactOut[2] = abi.encode(currencyOutExactOut, 0);
+        
+        inputsExactOut[0] = abi.encode(actionsExactOut, paramsExactOut);
+        
+        // Execute transaction
+        uint256 balBeforeExactOut = IERC20(btc).balanceOf(account);
+        universalRouter.execute(commandsExactOut, inputsExactOut, block.timestamp + 30 minutes);
+        uint256 balAfterExactOut = IERC20(btc).balanceOf(account);
+        console.log("BTC received: ", balAfterExactOut - balBeforeExactOut);
+        vm.stopBroadcast();
     }
 
     /// @notice 计算在Uniswap中给定tokenA和tokenB数量的sqrtPriceX96
