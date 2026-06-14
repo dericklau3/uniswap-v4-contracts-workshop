@@ -53,16 +53,18 @@ abstract contract BaseDeployScript is Script {
     }
 
     struct Config {
-        address usdc;
-        address signer;
-        address tokenRecipient;
+        address weth;
+        address permit2;
+        bytes32 nativeCurrencyLabel;
+        uint256 unsubscribeGasLimit;
     }
 
     function _getConfig() internal view returns (Config memory cfg) {
-        if (block.chainid == 8453) {
-            cfg.usdc = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
-            cfg.signer = 0x4408e1c6745B43350711317C89Db35B479992e5C;
-            cfg.tokenRecipient = 0x4408e1c6745B43350711317C89Db35B479992e5C;
+        if (block.chainid == 97) {
+            cfg.weth = 0x04E0459121DB7D49AE932428762a44B616E967D6;
+            cfg.permit2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+            cfg.nativeCurrencyLabel = bytes32("BNB");
+            cfg.unsubscribeGasLimit = 150000;
         }
-    } 
+    }
 }

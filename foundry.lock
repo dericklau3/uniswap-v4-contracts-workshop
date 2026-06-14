@@ -20,6 +20,18 @@
       "rev": "705f7bb9836ebc4f6ad1aad91629c3d0fc4128d4"
     }
   },
+  "lib/v2-core": {
+    "tag": {
+      "name": "v1.0.1",
+      "rev": "4dd59067c76dea4a0e8e4bfdda41877a6b16dedc"
+    }
+  },
+  "lib/v3-core": {
+    "branch": {
+      "name": "0.8",
+      "rev": "6562c52e8f75f0c10f9deaf44861847585fc8129"
+    }
+  },
   "lib/v4-core": {
     "branch": {
       "name": "main",
@@ -30,6 +42,9 @@
     "rev": "bae291c271be69882e084baa5993a033cb09362b"
   },
   "lib/v4-periphery": {
-    "rev": "6601a199799294378f4df9819e6641b2391ef3c5"
+    "branch": {
+      "name": "main",
+      "rev": "363226d9e1e2180b67bf6857023dbaad751010c5"
+    }
   }
 }

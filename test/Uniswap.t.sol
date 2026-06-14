@@ -61,7 +61,7 @@ contract UniswapTest is Test {
     IPoolManager poolManager = IPoolManager(0x000000000004444c5dc75cB358380D2e3dE08A90);
     IPositionManager positionManager = IPositionManager(payable(0xbD216513d74C8cf14cf4747E6AaA6420FF64ee9e));
     
-    IUniversalRouter universalRouter = IUniversalRouter(0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af);
+    IUniversalRouter universalRouter = IUniversalRouter(0x4C82D1fBFe28C977cBB58D8C7FF8FCF9F70a2cCA);
     V4Quoter v4Quoter = V4Quoter(0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203);
 
     function setUp() public {
@@ -116,6 +116,7 @@ contract UniswapTest is Test {
                 zeroForOne: !zeroForOne,
                 amountIn: 1000e18,
                 amountOutMinimum: 0,
+                minHopPriceX36: 0,
                 hookData: new bytes(0)
             })
         );
@@ -252,6 +253,7 @@ contract UniswapTest is Test {
                 zeroForOne: !zeroForOne,
                 amountIn: 1000e18,
                 amountOutMinimum: 0,
+                minHopPriceX36: 0,
                 hookData: new bytes(0)
             })
         );
@@ -460,6 +462,7 @@ contract UniswapTest is Test {
             IV4Router.ExactInputParams({
                 currencyIn: currencyInExactIn,
                 path: pathExactIn,
+                minHopPriceX36: new uint256[](0),
                 amountIn: uint128(amountInETH),
                 amountOutMinimum: uint128(0)
             })
@@ -522,6 +525,7 @@ contract UniswapTest is Test {
                 zeroForOne: address(weth) < address(usdt),  // ETH -> USDC
                 amountOut: uint128(2000e18),
                 amountInMaximum: uint128(amountInETHMax),
+                minHopPriceX36: 0,
                 hookData: new bytes(0)
             })
         );
@@ -589,6 +593,7 @@ contract UniswapTest is Test {
             IV4Router.ExactOutputParams({
                 currencyOut: currencyOutExactOut,
                 path: pathExactOut,
+                minHopPriceX36: new uint256[](0),
                 amountOut: uint128(0.01e18),
                 amountInMaximum: uint128(amountInETHMax)
             })

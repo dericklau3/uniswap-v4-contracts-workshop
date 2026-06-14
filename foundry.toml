@@ -22,3 +22,4 @@ ignore = ["test/**/*.sol", "script/**/*.sol"]
 
 [rpc_endpoints]
 mainnet = "${MAINNET_NETWORK}"
+bsctest = "${BSCTEST_NETWORK}"
