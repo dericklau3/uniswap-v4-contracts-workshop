@@ -10,10 +10,6 @@ contract WalletScript is BaseDeployScript {
     function run() public {
         
         vm.startBroadcast(privatekey);
-
-        Config memory cfg = _getConfig();
-        
-        deployWallet(cfg.usdc, cfg.signer, cfg.tokenRecipient);
         
         vm.stopBroadcast();
     }
