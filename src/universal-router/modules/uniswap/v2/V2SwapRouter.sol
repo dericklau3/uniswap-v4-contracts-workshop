@@ -8,7 +8,7 @@ import {Permit2Payments} from '../../Permit2Payments.sol';
 import {Constants} from '../../../libraries/Constants.sol';
 import {ERC20} from 'solmate/src/tokens/ERC20.sol';
 
-/// @title Router for Uniswap v2 Trades
+/// @title Uniswap V2 交易路由模块
 abstract contract V2SwapRouter is UniswapImmutables, Permit2Payments {
     error V2TooLittleReceived();
     error V2TooMuchRequested();
@@ -20,7 +20,7 @@ abstract contract V2SwapRouter is UniswapImmutables, Permit2Payments {
         private
     {
         unchecked {
-            // cached to save on duplicate operations
+            // 缓存首个 Pair 的 token0，后续每 hop 同时计算下一个 Pair 的 token0，减少重复排序。
             (address token0,) = UniswapV2Library.sortTokens(path[0], path[1]);
             uint256 finalPairIndex = path.length - 1;
             uint256 penultimatePairIndex = finalPairIndex - 1;
@@ -41,7 +41,8 @@ abstract contract V2SwapRouter is UniswapImmutables, Permit2Payments {
                     )
                     : (recipient, address(0));
 
-                // if minHopPrice is being used, we need to check output balance change
+                // 开启逐 hop 最低价格保护时，用下一个接收地址的实际余额增量衡量输出，
+                // 因而也能覆盖 fee-on-transfer token 导致的实际到账差异。
                 if (minHopPriceEnabled && minHopPriceX36[i] != 0) {
                     uint256 recipientBalance = ERC20(output).balanceOf(nextPair);
                     IUniswapV2Pair(pair).swap(amount0Out, amount1Out, nextPair, new bytes(0));
@@ -57,13 +58,15 @@ abstract contract V2SwapRouter is UniswapImmutables, Permit2Payments {
         }
     }
 
-    /// @notice Performs a Uniswap v2 exact input swap
-    /// @param recipient The recipient of the output tokens
-    /// @param amountIn The amount of input tokens for the trade
-    /// @param amountOutMinimum The minimum desired amount of output tokens
-    /// @param path The path of the trade as an array of token addresses
-    /// @param payer The address that will be paying the input
-    /// @param minHopPriceX36 Per-hop minimum price array in 1e36 precision (empty to disable)
+    /// @notice 执行 Uniswap V2 精确输入交易：固定首币投入，并要求最终输出不少于下限。
+    /// @dev 首跳输入通过路由器余额或 Permit2 直接发送给第一个 Pair；每个中间 Pair 将输出直接发送给
+    /// 下一个 Pair，最后一跳才发送给 `recipient`。最终使用接收者余额差检查整体滑点。
+    /// @param recipient 最终输出 token 接收者。
+    /// @param amountIn 首个输入 token 数量。
+    /// @param amountOutMinimum 可接受的最终最小输出量。
+    /// @param path 按交易方向排列的 token 地址数组。
+    /// @param payer 首跳付款地址；可为用户或 Universal Router。
+    /// @param minHopPriceX36 每个 hop 的最低兑换价格，精度为 1e36；空数组表示关闭逐 hop 检查。
     function v2SwapExactInput(
         address recipient,
         uint256 amountIn,
@@ -80,7 +83,7 @@ abstract contract V2SwapRouter is UniswapImmutables, Permit2Payments {
         address firstPair =
             UniswapV2Library.pairFor(UNISWAP_V2_FACTORY, UNISWAP_V2_PAIR_INIT_CODE_HASH, path[0], path[1]);
         if (
-            amountIn != Constants.ALREADY_PAID // amountIn of 0 to signal that the pair already has the tokens
+            amountIn != Constants.ALREADY_PAID // amountIn 为 0 表示 Pair 已提前收到输入 token。
         ) {
             payOrPermit2Transfer(path[0], payer, firstPair, amountIn);
         }
@@ -94,13 +97,14 @@ abstract contract V2SwapRouter is UniswapImmutables, Permit2Payments {
         if (amountOut < amountOutMinimum) revert V2TooLittleReceived();
     }
 
-    /// @notice Performs a Uniswap v2 exact output swap
-    /// @param recipient The recipient of the output tokens
-    /// @param amountOut The amount of output tokens to receive for the trade
-    /// @param amountInMaximum The maximum desired amount of input tokens
-    /// @param path The path of the trade as an array of token addresses
-    /// @param payer The address that will be paying the input
-    /// @param minHopPriceX36 Per-hop minimum price array in 1e36 precision (empty to disable)
+    /// @notice 执行 Uniswap V2 精确输出交易：固定最终输出，并限制首币最大投入。
+    /// @dev 先从末 hop 向前读取储备并反算总输入，再把准确输入发送给首个 Pair，随后按正向路径逐池交换。
+    /// @param recipient 最终输出 token 接收者。
+    /// @param amountOut 要获得的精确输出数量。
+    /// @param amountInMaximum 允许消耗的最大首币输入量。
+    /// @param path 按交易方向排列的 token 地址数组。
+    /// @param payer 首跳付款地址；可为用户或 Universal Router。
+    /// @param minHopPriceX36 每个 hop 的最低兑换价格，精度为 1e36；空数组表示关闭逐 hop 检查。
     function v2SwapExactOutput(
         address recipient,
         uint256 amountOut,

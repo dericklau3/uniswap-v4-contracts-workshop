@@ -10,12 +10,12 @@ struct MigratorParameters {
     address v4PositionManager;
 }
 
-/// @title Migrator Immutables
-/// @notice Immutable state for liquidity-migration contracts
+/// @title 迁移模块不可变量
+/// @notice 保存 V3 与 V4 PositionManager 地址，供跨版本流动性迁移命令调用。
 contract MigratorImmutables {
-    /// @notice v3 PositionManager address
+    /// @notice 管理 Uniswap V3 NFT 流动性头寸的 PositionManager。
     INonfungiblePositionManager public immutable V3_POSITION_MANAGER;
-    /// @notice v4 PositionManager address
+    /// @notice 管理 Uniswap V4 流动性头寸的 PositionManager。
     IPositionManager public immutable V4_POSITION_MANAGER;
 
     constructor(MigratorParameters memory params) {

@@ -6,15 +6,14 @@ import {BitMath} from "@uniswap/v4-core/src/libraries/BitMath.sol";
 import {Strings} from "openzeppelin-contracts/contracts/utils/Strings.sol";
 import {Base64} from "openzeppelin-contracts/contracts/utils/Base64.sol";
 
-/// @title SVG
-/// @notice Provides a function for generating an SVG associated with a Uniswap NFT
-/// @dev Reference: https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/NFTSVG.sol
+/// @title SVG 生成库
+/// @notice 根据 V4 仓位的货币、费率、tick 区间和 hook 地址生成链上 NFT SVG。
+/// @dev 参考：https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/NFTSVG.sol
 library SVG {
     using Strings for uint256;
 
-    // SVG path commands for the curve that represent the steepness of the position
-    // defined using the Cubic Bezier Curve syntax
-    // curve1 is the smallest (linear) curve, curve8 is the largest curve
+    // 使用三次贝塞尔曲线路径描述仓位价格区间的宽窄和曲线陡峭程度。
+    // curve1 最小且最接近直线，curve8 最大。
     string constant curve1 = "M1 1C41 41 105 105 145 145";
     string constant curve2 = "M1 1C33 49 97 113 145 145";
     string constant curve3 = "M1 1C33 57 89 113 145 145";
@@ -48,9 +47,9 @@ library SVG {
         string y3;
     }
 
-    /// @notice Generate the SVG associated with a Uniswap v4 NFT
-    /// @param params The SVGParams struct containing the parameters for the SVG
-    /// @return svg The SVG string associated with the NFT
+    /// @notice 生成与 Uniswap V4 仓位 NFT 对应的完整 SVG。
+    /// @param params 包含货币、费率、区间、tokenId、hook 和颜色种子的 SVG 参数。
+    /// @return svg NFT 的 SVG 字符串。
     function generateSVG(SVGParams memory params) internal pure returns (string memory svg) {
         return string(
             abi.encodePacked(
@@ -69,9 +68,9 @@ library SVG {
         );
     }
 
-    /// @notice Generate the SVG defs that create the color scheme for the SVG
-    /// @param params The SVGParams struct containing the parameters to generate the SVG defs
-    /// @return svg The SVG defs string
+    /// @notice 生成 SVG 的渐变、遮罩和滤镜定义，建立由池地址派生的配色方案。
+    /// @param params 生成 defs 所需的 SVG 参数。
+    /// @return svg SVG defs 字符串。
     function generateSVGDefs(SVGParams memory params) private pure returns (string memory svg) {
         svg = string(
             abi.encodePacked(
@@ -157,12 +156,12 @@ library SVG {
         );
     }
 
-    /// @notice Generate the SVG for the moving border text displaying the quote and base currency addresses with their symbols
-    /// @param quoteCurrency The quote currency
-    /// @param baseCurrency The base currency
-    /// @param quoteCurrencySymbol The quote currency symbol
-    /// @param baseCurrencySymbol The base currency symbol
-    /// @return svg The SVG for the border NFT's border text
+    /// @notice 生成沿卡片边框移动的文字，展示 quote/base 货币地址和符号。
+    /// @param quoteCurrency 报价货币。
+    /// @param baseCurrency 基础货币。
+    /// @param quoteCurrencySymbol 报价货币符号。
+    /// @param baseCurrencySymbol 基础货币符号。
+    /// @return svg NFT 边框文字 SVG。
     function generateSVGBorderText(
         string memory quoteCurrency,
         string memory baseCurrency,
@@ -196,11 +195,11 @@ library SVG {
         );
     }
 
-    /// @notice Generate the SVG for the card mantle displaying the quote and base currency symbols and fee tier
-    /// @param quoteCurrencySymbol The quote currency symbol
-    /// @param baseCurrencySymbol The base currency symbol
-    /// @param feeTier The fee tier
-    /// @return svg The SVG for the card mantle
+    /// @notice 生成卡片顶部信息区，展示 quote/base 货币符号与费率层级。
+    /// @param quoteCurrencySymbol 报价货币符号。
+    /// @param baseCurrencySymbol 基础货币符号。
+    /// @param feeTier 费率字符串。
+    /// @return svg 卡片顶部信息区 SVG。
     function generateSVGCardMantle(
         string memory quoteCurrencySymbol,
         string memory baseCurrencySymbol,
@@ -220,13 +219,13 @@ library SVG {
         );
     }
 
-    /// @notice Generate the SVG for the curve that represents the position. Fade up (top is faded) if current price is above your position range, fade down (bottom is faded) if current price is below your position range
-    /// Circles are generated at the ends of the curve if the position is in range, or at one end of the curve it is on if not in range
-    /// @param tickLower The lower tick
-    /// @param tickUpper The upper tick
-    /// @param tickSpacing The tick spacing
-    /// @param overRange Whether the current tick is in range, over range, or under range
-    /// @return svg The SVG for the curve
+    /// @notice 生成代表仓位价格区间的曲线，并用渐隐方向表达当前价格位于区间上方或下方。
+    /// @dev 仓位在区间内时曲线两端都有圆点；超出区间时只突出当前价格所在一侧的端点。
+    /// @param tickLower 仓位下界 tick。
+    /// @param tickUpper 仓位上界 tick。
+    /// @param tickSpacing 池 tick 间距。
+    /// @param overRange 当前 tick 相对区间的位置：区间内、上方或下方。
+    /// @return svg 仓位曲线 SVG。
     function generageSvgCurve(int24 tickLower, int24 tickUpper, int24 tickSpacing, int8 overRange)
         private
         pure
@@ -256,12 +255,12 @@ library SVG {
         );
     }
 
-    /// @notice Get the curve based on the tick range
-    /// The smaller the tick range, the smaller/more linear the curve
-    /// @param tickLower The lower tick
-    /// @param tickUpper The upper tick
-    /// @param tickSpacing The tick spacing
-    /// @return curve The curve path
+    /// @notice 根据规范化后的 tick 区间选择曲线路径。
+    /// @dev 区间越窄，曲线越小且越接近直线；区间越宽，曲线弯曲和跨度越大。
+    /// @param tickLower 仓位下界 tick。
+    /// @param tickUpper 仓位上界 tick。
+    /// @param tickSpacing 池 tick 间距。
+    /// @return curve SVG 曲线路径。
     function getCurve(int24 tickLower, int24 tickUpper, int24 tickSpacing) internal pure returns (string memory curve) {
         int24 tickRange = (tickUpper - tickLower) / tickSpacing;
         if (tickRange <= 4) {
@@ -283,15 +282,15 @@ library SVG {
         }
     }
 
-    /// @notice Generate the SVG for the circles on the curve
-    /// @param overRange 0 if the current tick is in range, 1 if the current tick is over range, -1 if the current tick is under range
-    /// @return svg The SVG for the circles
+    /// @notice 生成仓位曲线端点圆形标记。
+    /// @param overRange 当前 tick 在区间内为 0，高于区间为 1，低于区间为 -1。
+    /// @return svg 圆点 SVG。
     function generateSVGCurveCircle(int8 overRange) internal pure returns (string memory svg) {
         string memory curvex1 = "73";
         string memory curvey1 = "190";
         string memory curvex2 = "217";
         string memory curvey2 = "334";
-        /// If the position is over or under range, generate one circle at the end of the curve on the side of the range it is on with a larger circle around it
+        /// 仓位位于区间上方或下方时，只在对应一端绘制圆点，并增加外圈强调非活跃侧。
         if (overRange == 1 || overRange == -1) {
             svg = string(
                 abi.encodePacked(
@@ -307,7 +306,7 @@ library SVG {
                 )
             );
         } else {
-            /// If the position is in range, generate two circles at the ends of the curve
+            /// 当前价格位于区间内时，在曲线两端各绘制一个圆点。
             svg = string(
                 abi.encodePacked(
                     '<circle cx="',
@@ -325,12 +324,12 @@ library SVG {
         }
     }
 
-    /// @notice Generate the SVG for the position data (token ID, hooks address, min tick, max tick) and the location curve (where your position falls on the curve)
-    /// @param tokenId The token ID
-    /// @param hook The hooks address
-    /// @param tickLower The lower tick
-    /// @param tickUpper The upper tick
-    /// @return svg The SVG for the position data and location curve
+    /// @notice 生成仓位数据区，包括 token ID、hook 地址、上下 tick 和仓位在全价格曲线中的位置。
+    /// @param tokenId NFT token ID。
+    /// @param hook hook 合约地址。
+    /// @param tickLower 仓位下界 tick。
+    /// @param tickUpper 仓位上界 tick。
+    /// @return svg 仓位数据和位置曲线 SVG。
     function generateSVGPositionDataAndLocationCurve(
         string memory tokenId,
         address hook,
@@ -407,10 +406,10 @@ library SVG {
         return string(abi.encodePacked(sign, uint256(uint24(tick)).toString()));
     }
 
-    /// @notice Get the location of where your position falls on the curve
-    /// @param tickLower The lower tick
-    /// @param tickUpper The upper tick
-    /// @return The x and y coordinates of the location of the liquidity
+    /// @notice 计算仓位区间在全价格曲线上的可视化位置。
+    /// @param tickLower 仓位下界 tick。
+    /// @param tickUpper 仓位上界 tick。
+    /// @return 流动性位置的 x、y 坐标。
     function rangeLocation(int24 tickLower, int24 tickUpper) internal pure returns (string memory, string memory) {
         int24 midPoint = (tickLower + tickUpper) / 2;
         if (midPoint < -125_000) {
@@ -436,10 +435,10 @@ library SVG {
         }
     }
 
-    /// @notice Generates the SVG for a rare sparkle if the NFT is rare. Else, returns an empty string
-    /// @param tokenId The token ID
-    /// @param hooks The hooks address
-    /// @return svg The SVG for the rare sparkle
+    /// @notice 若 tokenId 与 hook 地址组合满足稀有条件，则生成闪光 SVG，否则返回空字符串。
+    /// @param tokenId NFT token ID。
+    /// @param hooks hook 合约地址。
+    /// @return svg 稀有闪光 SVG 或空字符串。
     function generateSVGRareSparkle(uint256 tokenId, address hooks) private pure returns (string memory svg) {
         if (isRare(tokenId, hooks)) {
             svg = string(
@@ -456,10 +455,10 @@ library SVG {
         }
     }
 
-    /// @notice Determines if an NFT is rare based on the token ID and hooks address
-    /// @param tokenId The token ID
-    /// @param hooks The hooks address
-    /// @return Whether the NFT is rare or not
+    /// @notice 根据 token ID 和 hook 地址的确定性哈希判断 NFT 是否稀有。
+    /// @param tokenId NFT token ID。
+    /// @param hooks hook 合约地址。
+    /// @return NFT 是否命中稀有条件。
     function isRare(uint256 tokenId, address hooks) internal pure returns (bool) {
         bytes32 h = keccak256(abi.encodePacked(tokenId, hooks));
         return uint256(h) < type(uint256).max / (1 + BitMath.mostSignificantBit(tokenId) * 2);

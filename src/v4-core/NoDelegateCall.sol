@@ -3,29 +3,29 @@ pragma solidity ^0.8.0;
 
 import {CustomRevert} from "./libraries/CustomRevert.sol";
 
-/// @title Prevents delegatecall to a contract
-/// @notice Base contract that provides a modifier for preventing delegatecall to methods in a child contract
+/// @title 防止通过 delegatecall 调用合约
+/// @notice 为子合约提供修饰器，阻止函数在其他合约的存储上下文中通过 delegatecall 执行。
 abstract contract NoDelegateCall {
     using CustomRevert for bytes4;
 
     error DelegateCallNotAllowed();
 
-    /// @dev The original address of this contract
+    /// @dev 合约部署后自身的原始地址，用来与运行时的 `address(this)` 比较。
     address private immutable original;
 
     constructor() {
-        // Immutables are computed in the init code of the contract, and then inlined into the deployed bytecode.
-        // In other words, this variable won't change when it's checked at runtime.
+        // immutable 值在部署 init code 中计算，随后直接内联进运行时代码。
+        // 因此运行时检查该变量时，它不会随着 delegatecall 的存储上下文改变。
         original = address(this);
     }
 
-    /// @dev Private method is used instead of inlining into modifier because modifiers are copied into each method,
-    ///     and the use of immutable means the address bytes are copied in every place the modifier is used.
+    /// @dev 使用 private 函数而不是把检查直接写入 modifier，是因为 modifier 会被复制到每个使用它的函数；
+    ///      immutable 地址也会随之在每处重复嵌入。集中到此函数可减少部署字节码。
     function checkNotDelegateCall() private view {
         if (address(this) != original) DelegateCallNotAllowed.selector.revertWith();
     }
 
-    /// @notice Prevents delegatecall into the modified method
+    /// @notice 阻止通过 delegatecall 进入使用该修饰器的函数。
     modifier noDelegateCall() {
         checkNotDelegateCall();
         _;

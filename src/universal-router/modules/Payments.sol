@@ -8,8 +8,8 @@ import {PaymentsImmutables} from '../modules/PaymentsImmutables.sol';
 import {SafeTransferLib} from 'solmate/src/utils/SafeTransferLib.sol';
 import {ERC20} from 'solmate/src/tokens/ERC20.sol';
 
-/// @title Payments contract
-/// @notice Performs various operations around the payment of ETH and tokens
+/// @title Universal Router 资金支付模块
+/// @notice 处理路由器余额中的 ETH/ERC20 转账、按比例分配、余额归集以及 ETH/WETH9 转换。
 abstract contract Payments is PaymentsImmutables {
     using SafeTransferLib for ERC20;
     using SafeTransferLib for address;
@@ -19,10 +19,11 @@ abstract contract Payments is PaymentsImmutables {
     error InsufficientETH();
     error InvalidPortion();
 
-    /// @notice Pays an amount of ETH or ERC20 to a recipient
-    /// @param token The token to pay (can be ETH using Constants.ETH)
-    /// @param recipient The address that will receive the payment
-    /// @param value The amount to pay
+    /// @notice 从 Universal Router 当前余额向接收者支付指定数量的 ETH 或 ERC20。
+    /// @dev `value == CONTRACT_BALANCE` 仅对 ERC20 表示发送路由器持有的全部该代币余额。
+    /// @param token 支付资产地址；使用 `Constants.ETH` 表示原生 ETH。
+    /// @param recipient 收款地址。
+    /// @param value 支付数量，或用于 ERC20 的 `CONTRACT_BALANCE` 哨兵值。
     function pay(address token, address recipient, uint256 value) internal {
         if (token == Constants.ETH) {
             recipient.safeTransferETH(value);
@@ -35,10 +36,11 @@ abstract contract Payments is PaymentsImmutables {
         }
     }
 
-    /// @notice Pays a proportion of the contract's ETH or ERC20 to a recipient
-    /// @param token The token to pay (can be ETH using Constants.ETH)
-    /// @param recipient The address that will receive payment
-    /// @param bips Portion in bips of whole balance of the contract
+    /// @notice 按 bips 比例支付路由器持有的 ETH 或 ERC20 余额。
+    /// @dev 常用于将一次 swap 或多命令执行后的剩余资产按份额分给费用接收者。
+    /// @param token 支付资产地址；使用 `Constants.ETH` 表示原生 ETH。
+    /// @param recipient 收款地址。
+    /// @param bips 占路由器该资产总余额的万分比份额。
     function payPortion(address token, address recipient, uint256 bips) internal {
         if (token == Constants.ETH) {
             uint256 balance = address(this).balance;
@@ -51,10 +53,11 @@ abstract contract Payments is PaymentsImmutables {
         }
     }
 
-    /// @notice Pays a proportion of the contract's ETH or ERC20 to a recipient with 1e18 precision
-    /// @param token The token to pay (can be ETH using Constants.ETH)
-    /// @param recipient The address that will receive payment
-    /// @param portion Portion of whole balance of the contract, where 1e18 represents 100%
+    /// @notice 以 1e18 精度按比例支付路由器持有的 ETH 或 ERC20 余额。
+    /// @dev 相比 bips 版本可表达更细粒度的分润；`portion` 不能超过 1e18。
+    /// @param token 支付资产地址；使用 `Constants.ETH` 表示原生 ETH。
+    /// @param recipient 收款地址。
+    /// @param portion 占总余额的比例，其中 1e18 表示 100%。
     function payPortionFullPrecision(address token, address recipient, uint256 portion) internal {
         if (portion > 1e18) revert InvalidPortion();
         if (token == Constants.ETH) {
@@ -68,10 +71,11 @@ abstract contract Payments is PaymentsImmutables {
         }
     }
 
-    /// @notice Sweeps all of the contract's ERC20 or ETH to an address
-    /// @param token The token to sweep (can be ETH using Constants.ETH)
-    /// @param recipient The address that will receive payment
-    /// @param amountMinimum The minimum desired amount
+    /// @notice 将路由器持有的某种 ERC20 或 ETH 全部归集到指定地址。
+    /// @dev `amountMinimum` 同时承担最终滑点/余额下限检查，避免前序命令产出不足时仍把低于预期的余额转走。
+    /// @param token 待归集资产地址；使用 `Constants.ETH` 表示原生 ETH。
+    /// @param recipient 接收全部余额的地址。
+    /// @param amountMinimum 可接受的最小归集数量。
     function sweep(address token, address recipient, uint256 amountMinimum) internal {
         uint256 balance;
         if (token == Constants.ETH) {
@@ -85,9 +89,10 @@ abstract contract Payments is PaymentsImmutables {
         }
     }
 
-    /// @notice Wraps an amount of ETH into WETH
-    /// @param recipient The recipient of the WETH
-    /// @param amount The amount to wrap (can be CONTRACT_BALANCE)
+    /// @notice 将路由器持有的指定数量 ETH 包装为 WETH9。
+    /// @dev 可把 WETH9 留在路由器中供后续 swap 使用，也可直接发送给最终接收者。
+    /// @param recipient WETH9 接收者。
+    /// @param amount 包装数量；可使用 `CONTRACT_BALANCE` 表示路由器全部 ETH 余额。
     function wrapETH(address recipient, uint256 amount) internal {
         if (amount == ActionConstants.CONTRACT_BALANCE) {
             amount = address(this).balance;
@@ -102,9 +107,10 @@ abstract contract Payments is PaymentsImmutables {
         }
     }
 
-    /// @notice Unwraps all of the contract's WETH into ETH
-    /// @param recipient The recipient of the ETH
-    /// @param amountMinimum The minimum amount of ETH desired
+    /// @notice 将路由器持有的全部 WETH9 解包为 ETH。
+    /// @dev 解包前检查最低数量；接收者为路由器自身时，ETH 会保留给后续命令使用。
+    /// @param recipient ETH 接收者。
+    /// @param amountMinimum 可接受的最小 WETH9/ETH 数量。
     function unwrapWETH9(address recipient, uint256 amountMinimum) internal {
         uint256 value = WETH9.balanceOf(address(this));
         if (value < amountMinimum) {

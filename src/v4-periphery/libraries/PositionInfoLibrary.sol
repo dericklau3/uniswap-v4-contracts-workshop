@@ -5,28 +5,26 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 
 /**
- * @dev PositionInfo is a packed version of solidity structure.
- * Using the packaged version saves gas and memory by not storing the structure fields in memory slots.
+ * @dev `PositionInfo` 是仓位信息的压缩表示，把多个字段放入一个 uint256，减少存储槽和内存开销。
  *
- * Layout:
+ * 布局：
  * 200 bits poolId | 24 bits tickUpper | 24 bits tickLower | 8 bits hasSubscriber
  *
- * Fields in the direction from the least significant bit:
+ * 从最低有效位向高位依次为：
  *
- * A flag to know if the tokenId is subscribed to an address
+ * tokenId 是否绑定订阅者的标志：
  * uint8 hasSubscriber;
  *
- * The tickUpper of the position
+ * 仓位上界：
  * int24 tickUpper;
  *
- * The tickLower of the position
+ * 仓位下界：
  * int24 tickLower;
  *
- * The truncated poolId. Truncates a bytes32 value so the most signifcant (highest) 200 bits are used.
+ * 截断后的 poolId：取原 bytes32 最高 200 位，仅用于在 `poolKeys` 映射中查找完整 PoolKey：
  * bytes25 poolId;
  *
- * Note: If more bits are needed, hasSubscriber can be a single bit.
- *
+ * 注意：若未来需要更多位，hasSubscriber 实际可以压缩为单个 bit。
  */
 type PositionInfo is uint256;
 
@@ -43,7 +41,7 @@ library PositionInfoLibrary {
     uint8 internal constant TICK_LOWER_OFFSET = 8;
     uint8 internal constant TICK_UPPER_OFFSET = 32;
 
-    /// @dev This poolId is NOT compatible with the poolId used in UniswapV4 core. It is truncated to 25 bytes, and just used to lookup PoolKey in the poolKeys mapping.
+    /// @dev 该 poolId 已截断为 25 字节，与 V4 core 的完整 PoolId 不兼容，只能用于查询 `poolKeys` 映射。
     function poolId(PositionInfo info) internal pure returns (bytes25 _poolId) {
         assembly ("memory-safe") {
             _poolId := and(MASK_UPPER_200_BITS, info)
@@ -68,26 +66,26 @@ library PositionInfoLibrary {
         }
     }
 
-    /// @dev this does not actually set any storage
+    /// @dev 纯函数只返回设置订阅标志后的新值，不会直接写入存储。
     function setSubscribe(PositionInfo info) internal pure returns (PositionInfo _info) {
         assembly ("memory-safe") {
             _info := or(info, SET_SUBSCRIBE)
         }
     }
 
-    /// @dev this does not actually set any storage
+    /// @dev 纯函数只返回清除订阅标志后的新值，不会直接写入存储。
     function setUnsubscribe(PositionInfo info) internal pure returns (PositionInfo _info) {
         assembly ("memory-safe") {
             _info := and(info, SET_UNSUBSCRIBE)
         }
     }
 
-    /// @notice Creates the default PositionInfo struct
-    /// @dev Called when minting a new position
-    /// @param _poolKey the pool key of the position
-    /// @param _tickLower the lower tick of the position
-    /// @param _tickUpper the upper tick of the position
-    /// @return info packed position info, with the truncated poolId and the hasSubscriber flag set to false
+    /// @notice 创建新仓位的默认压缩 PositionInfo。
+    /// @dev 铸造仓位时调用；订阅标志默认关闭。
+    /// @param _poolKey 仓位所属池键。
+    /// @param _tickLower 仓位价格区间下界。
+    /// @param _tickUpper 仓位价格区间上界。
+    /// @return info 包含截断 poolId、上下 tick 和 false 订阅标志的压缩值。
     function initialize(PoolKey memory _poolKey, int24 _tickLower, int24 _tickUpper)
         internal
         pure

@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// @notice library of functions related to protocol fees
+/// @notice 处理协议费打包、方向读取、有效性检查与总兑换费计算的工具库。
 library ProtocolFeeLibrary {
-    /// @notice Max protocol fee is 0.1% (1000 pips)
-    /// @dev Increasing these values could lead to overflow in Pool.swap
+    /// @notice 协议费上限为 0.1%（1000 pips）。
+    /// @dev 提高该上限可能导致 Pool.swap 中的计算溢出。
     uint16 public constant MAX_PROTOCOL_FEE = 1000;
 
-    /// @notice Thresholds used for optimized bounds checks on protocol fees
+    /// @notice 用于优化协议费边界检查的阈值。
     uint24 internal constant FEE_0_THRESHOLD = 1001;
     uint24 internal constant FEE_1_THRESHOLD = 1001 << 12;
 
-    /// @notice the protocol fee is represented in hundredths of a bip
+    /// @notice 协议费以百分之一 bip 表示。
     uint256 internal constant PIPS_DENOMINATOR = 1_000_000;
 
     function getZeroForOneFee(uint24 self) internal pure returns (uint16) {
@@ -23,7 +23,7 @@ library ProtocolFeeLibrary {
     }
 
     function isValidProtocolFee(uint24 self) internal pure returns (bool valid) {
-        // Equivalent to: getZeroForOneFee(self) <= MAX_PROTOCOL_FEE && getOneForZeroFee(self) <= MAX_PROTOCOL_FEE
+        // 等价于：getZeroForOneFee(self) <= MAX_PROTOCOL_FEE && getOneForZeroFee(self) <= MAX_PROTOCOL_FEE
         assembly ("memory-safe") {
             let isZeroForOneFeeOk := lt(and(self, 0xfff), FEE_0_THRESHOLD)
             let isOneForZeroFeeOk := lt(and(self, 0xfff000), FEE_1_THRESHOLD)
@@ -31,10 +31,10 @@ library ProtocolFeeLibrary {
         }
     }
 
-    // The protocol fee is taken from the input amount first and then the LP fee is taken from the remaining
-    // The swap fee is capped at 100%
-    // Equivalent to protocolFee + lpFee(1_000_000 - protocolFee) / 1_000_000 (rounded up)
-    /// @dev here `self` is just a single direction's protocol fee, not a packed type of 2 protocol fees
+    // 先从输入金额中扣除协议费，再从剩余输入中扣除 LP fee。
+    // 总 swap fee 上限为 100%。
+    // 等价于 protocolFee + lpFee(1_000_000 - protocolFee) / 1_000_000（向上取整）。
+    /// @dev 此处 `self` 只是单一兑换方向的协议费，不是打包了两个方向费率的 uint24。
     function calculateSwapFee(uint16 self, uint24 lpFee) internal pure returns (uint24 swapFee) {
         // protocolFee + lpFee - (protocolFee * lpFee / 1_000_000)
         assembly ("memory-safe") {

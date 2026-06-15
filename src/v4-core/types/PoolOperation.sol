@@ -4,23 +4,23 @@ pragma solidity ^0.8.24;
 import {PoolKey} from "../types/PoolKey.sol";
 import {BalanceDelta} from "../types/BalanceDelta.sol";
 
-/// @notice Parameter struct for `ModifyLiquidity` pool operations
+/// @notice `ModifyLiquidity` 池操作的参数结构体。
 struct ModifyLiquidityParams {
-    // the lower and upper tick of the position
+    // 仓位的下边界与上边界 tick。
     int24 tickLower;
     int24 tickUpper;
-    // how to modify the liquidity
+    // 流动性修改量：正数增加，负数移除。
     int256 liquidityDelta;
-    // a value to set if you want unique liquidity positions at the same range
+    // 当同一所有者需要在相同价格区间建立多个独立仓位时，用 salt 区分仓位。
     bytes32 salt;
 }
 
-/// @notice Parameter struct for `Swap` pool operations
+/// @notice `Swap` 池操作的参数结构体。
 struct SwapParams {
-    /// Whether to swap token0 for token1 or vice versa
+    /// 兑换方向：true 表示 token0 换 token1，false 表示 token1 换 token0。
     bool zeroForOne;
-    /// The desired input amount if negative (exactIn), or the desired output amount if positive (exactOut)
+    /// 指定数量：负数表示期望输入量（exactIn），正数表示期望输出量（exactOut）。
     int256 amountSpecified;
-    /// The sqrt price at which, if reached, the swap will stop executing
+    /// 兑换执行到该平方根价格时停止，用于限制成交价格边界。
     uint160 sqrtPriceLimitX96;
 }

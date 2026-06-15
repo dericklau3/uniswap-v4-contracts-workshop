@@ -1,35 +1,32 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// @title Contains 512-bit math functions
-/// @notice Facilitates multiplication and division that can have overflow of an intermediate value without any loss of precision
-/// @dev Handles "phantom overflow" i.e., allows multiplication and division where an intermediate value overflows 256 bits
+/// @title 512 bit 高精度数学函数
+/// @notice 在乘除中间结果可能超过 256 bit 时，仍可无精度损失地计算最终 256 bit 结果。
+/// @dev 处理 "phantom overflow"：允许中间乘积溢出 256 bit，只要最终商仍能放入 uint256。
 library FullMath {
-    /// @notice Calculates floor(a×b÷denominator) with full precision. Throws if result overflows a uint256 or denominator == 0
-    /// @param a The multiplicand
-    /// @param b The multiplier
-    /// @param denominator The divisor
-    /// @return result The 256-bit result
-    /// @dev Credit to Remco Bloemen under MIT license https://xn--2-umb.com/21/muldiv
+    /// @notice 全精度计算 floor(a×b÷denominator)；结果溢出 uint256 或 denominator == 0 时回滚。
+    /// @param a 被乘数。
+    /// @param b 乘数。
+    /// @param denominator 除数。
+    /// @return result 256 bit 计算结果。
+    /// @dev 基于 Remco Bloemen 的 MIT 许可实现：https://xn--2-umb.com/21/muldiv
     function mulDiv(uint256 a, uint256 b, uint256 denominator) internal pure returns (uint256 result) {
         unchecked {
-            // 512-bit multiply [prod1 prod0] = a * b
-            // Compute the product mod 2**256 and mod 2**256 - 1
-            // then use the Chinese Remainder Theorem to reconstruct
-            // the 512 bit result. The result is stored in two 256
-            // variables such that product = prod1 * 2**256 + prod0
-            uint256 prod0 = a * b; // Least significant 256 bits of the product
-            uint256 prod1; // Most significant 256 bits of the product
+            // 计算 512 bit 乘积 [prod1 prod0] = a * b。
+            // 分别计算乘积对 2**256 和 2**256 - 1 的模，再用中国剩余定理重建 512 bit 结果。
+            // 结果保存在两个 256 bit 变量中：product = prod1 * 2**256 + prod0。
+            uint256 prod0 = a * b; // 乘积的低 256 bit。
+            uint256 prod1; // 乘积的高 256 bit。
             assembly ("memory-safe") {
                 let mm := mulmod(a, b, not(0))
                 prod1 := sub(sub(mm, prod0), lt(mm, prod0))
             }
 
-            // Make sure the result is less than 2**256.
-            // Also prevents denominator == 0
+            // 确保最终结果小于 2**256，同时排除 denominator == 0。
             require(denominator > prod1);
 
-            // Handle non-overflow cases, 256 by 256 division
+            // 乘积未超过 256 bit 时，直接执行 256/256 除法。
             if (prod1 == 0) {
                 assembly ("memory-safe") {
                     result := div(prod0, denominator)
@@ -38,74 +35,67 @@ library FullMath {
             }
 
             ///////////////////////////////////////////////
-            // 512 by 256 division.
+            // 512/256 除法。
             ///////////////////////////////////////////////
 
-            // Make division exact by subtracting the remainder from [prod1 prod0]
-            // Compute remainder using mulmod
+            // 从 [prod1 prod0] 中减去余数，使后续除法可以整除。
+            // 使用 mulmod 计算余数。
             uint256 remainder;
             assembly ("memory-safe") {
                 remainder := mulmod(a, b, denominator)
             }
-            // Subtract 256 bit number from 512 bit number
+            // 从 512 bit 数中减去一个 256 bit 数。
             assembly ("memory-safe") {
                 prod1 := sub(prod1, gt(remainder, prod0))
                 prod0 := sub(prod0, remainder)
             }
 
-            // Factor powers of two out of denominator
-            // Compute largest power of two divisor of denominator.
-            // Always >= 1.
+            // 从 denominator 中提取 2 的幂因子。
+            // 计算 denominator 的最大 2 次幂因子，结果始终 >= 1。
             uint256 twos = (0 - denominator) & denominator;
-            // Divide denominator by power of two
+            // denominator 除以该 2 次幂因子。
             assembly ("memory-safe") {
                 denominator := div(denominator, twos)
             }
 
-            // Divide [prod1 prod0] by the factors of two
+            // [prod1 prod0] 同样除以该 2 次幂因子。
             assembly ("memory-safe") {
                 prod0 := div(prod0, twos)
             }
-            // Shift in bits from prod1 into prod0. For this we need
-            // to flip `twos` such that it is 2**256 / twos.
-            // If twos is zero, then it becomes one
+            // 把 prod1 中的 bit 移入 prod0。为此需把 `twos` 转换为 2**256 / twos；
+            // 若 twos 在 256 bit 算术中变为 0，则此计算会得到 1。
             assembly ("memory-safe") {
                 twos := add(div(sub(0, twos), twos), 1)
             }
             prod0 |= prod1 * twos;
 
-            // Invert denominator mod 2**256
-            // Now that denominator is an odd number, it has an inverse
-            // modulo 2**256 such that denominator * inv = 1 mod 2**256.
-            // Compute the inverse by starting with a seed that is correct
-            // correct for four bits. That is, denominator * inv = 1 mod 2**4
+            // 计算 denominator 在模 2**256 下的乘法逆元。
+            // 此时 denominator 已是奇数，因此存在 inv，使 denominator * inv = 1 mod 2**256。
+            // 从低 4 bit 正确的种子开始，即 denominator * inv = 1 mod 2**4。
             uint256 inv = (3 * denominator) ^ 2;
-            // Now use Newton-Raphson iteration to improve the precision.
-            // Thanks to Hensel's lifting lemma, this also works in modular
-            // arithmetic, doubling the correct bits in each step.
-            inv *= 2 - denominator * inv; // inverse mod 2**8
-            inv *= 2 - denominator * inv; // inverse mod 2**16
-            inv *= 2 - denominator * inv; // inverse mod 2**32
-            inv *= 2 - denominator * inv; // inverse mod 2**64
-            inv *= 2 - denominator * inv; // inverse mod 2**128
-            inv *= 2 - denominator * inv; // inverse mod 2**256
+            // 使用 Newton-Raphson 迭代提高精度。依据 Hensel lifting lemma，
+            // 该方法在模算术中同样成立，每轮都会把正确 bit 数翻倍。
+            inv *= 2 - denominator * inv; // 模 2**8 的逆元。
+            inv *= 2 - denominator * inv; // 模 2**16 的逆元。
+            inv *= 2 - denominator * inv; // 模 2**32 的逆元。
+            inv *= 2 - denominator * inv; // 模 2**64 的逆元。
+            inv *= 2 - denominator * inv; // 模 2**128 的逆元。
+            inv *= 2 - denominator * inv; // 模 2**256 的逆元。
 
-            // Because the division is now exact we can divide by multiplying
-            // with the modular inverse of denominator. This will give us the
-            // correct result modulo 2**256. Since the preconditions guarantee
-            // that the outcome is less than 2**256, this is the final result.
-            // We don't need to compute the high bits of the result and prod1
-            // is no longer required.
+            // 当前除法已可整除，因此乘以 denominator 的模逆元即可完成除法，
+            // 并得到模 2**256 下的正确结果。前置检查保证结果小于 2**256，
+            // 所以这就是最终值，无需再计算高位，prod1 也不再需要。
             result = prod0 * inv;
             return result;
         }
     }
 
-    /// @notice Calculates ceil(a×b÷denominator) with full precision. Throws if result overflows a uint256 or denominator == 0
-    /// @param a The multiplicand
-    /// @param b The multiplier
-    /// @param denominator The divisor
-    /// @return result The 256-bit result
+    /// @notice 全精度计算 ceil(a×b÷denominator)；结果溢出 uint256 或 denominator == 0 时回滚。
+    /// @dev 先计算向下取整结果；若 mulmod 表明存在余数，则结果加 1，因此舍入方向对接收方所需数量更保守。
+    /// @param a 被乘数。
+    /// @param b 乘数。
+    /// @param denominator 除数。
+    /// @return result 256 bit 计算结果。
     function mulDivRoundingUp(uint256 a, uint256 b, uint256 denominator) internal pure returns (uint256 result) {
         unchecked {
             result = mulDiv(a, b, denominator);

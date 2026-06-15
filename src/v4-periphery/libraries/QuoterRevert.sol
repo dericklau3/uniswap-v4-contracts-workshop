@@ -7,41 +7,37 @@ library QuoterRevert {
     using QuoterRevert for bytes;
     using ParseBytes for bytes;
 
-    /// @notice error thrown when invalid revert bytes are thrown by the quote
+    /// @notice 报价回退数据不是预期 `QuoteSwap` 格式时抛出。
     error UnexpectedRevertBytes(bytes revertData);
 
-    /// @notice error thrown containing the quote as the data, to be caught and parsed later
+    /// @notice 用错误参数携带报价金额，供外层 try/catch 捕获和解析。
     error QuoteSwap(uint256 amount);
 
-    /// @notice reverts, where the revert data is the provided bytes
-    /// @dev called when quoting, to record the quote amount in an error
-    /// @dev QuoteSwap is used to differentiate this error from other errors thrown when simulating the swap
+    /// @notice 主动回退并把报价金额编码进 `QuoteSwap`。
+    /// @dev 报价模拟用回退回滚全部状态；专用 selector 可将成功报价与真实模拟错误区分开。
     function revertQuote(uint256 quoteAmount) internal pure {
         revert QuoteSwap(quoteAmount);
     }
 
-    /// @notice reverts using the revertData as the reason
-    /// @dev to bubble up both the valid QuoteSwap(amount) error, or an alternative error thrown during simulation
+    /// @notice 使用原始 `revertData` 作为原因重新回退。
+    /// @dev 既可上传合法 `QuoteSwap(amount)`，也可保留模拟期间产生的其他错误。
     function bubbleReason(bytes memory revertData) internal pure {
-        // mload(revertData): the length of the revert data
-        // add(revertData, 0x20): a pointer to the start of the revert data
+        // mload(revertData) 是数据长度；add(revertData, 0x20) 指向实际数据起点。
         assembly ("memory-safe") {
             revert(add(revertData, 0x20), mload(revertData))
         }
     }
 
-    /// @notice validates whether a revert reason is a valid swap quote or not
-    /// if valid, it decodes the quote to return. Otherwise it reverts.
+    /// @notice 验证回退原因是否为合法兑换报价；合法则解码金额，否则继续回退。
     function parseQuoteAmount(bytes memory reason) internal pure returns (uint256 quoteAmount) {
-        // If the error doesnt start with QuoteSwap, we know this isnt a valid quote to parse
-        // Instead it is another revert that was triggered somewhere in the simulation
+        // selector 不是 QuoteSwap 时，说明模拟在其他位置真实失败，不能把它误当成报价结果。
         if (reason.parseSelector() != QuoteSwap.selector) {
             revert UnexpectedRevertBytes(reason);
         }
 
-        // reason -> reason+0x1f is the length of the reason string
-        // reason+0x20 -> reason+0x23 is the selector of QuoteSwap
-        // reason+0x24 -> reason+0x43 is the quoteAmount
+        // reason 到 reason+0x1f 为 bytes 长度；
+        // reason+0x20 到 reason+0x23 为 QuoteSwap selector；
+        // reason+0x24 到 reason+0x43 为 quoteAmount。
         assembly ("memory-safe") {
             quoteAmount := mload(add(reason, 0x24))
         }

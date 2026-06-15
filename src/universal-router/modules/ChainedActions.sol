@@ -22,7 +22,7 @@ abstract contract ChainedActions is Payments {
         uint256 inputAmount = params.inputAmount;
         uint256 callValue = 0;
 
-        // Resolve sentinel value for inputAmount
+        // 解析 `CONTRACT_BALANCE` 哨兵值，使前序 swap 的全部产出可直接作为 Across 存款输入。
         if (inputAmount == ActionConstants.CONTRACT_BALANCE) {
             if (params.useNative) {
                 inputAmount = address(this).balance;
@@ -32,11 +32,11 @@ abstract contract ChainedActions is Payments {
         }
 
         if (params.useNative) {
-            // Require ETH path to use WETH as inputToken per Across docs.
-            // Router must currently hold ETH equal to inputAmount.
+            // 按 Across 约定，原生 ETH 路径仍以 WETH 作为 `inputToken` 标识；
+            // Universal Router 此时必须实际持有等于 `inputAmount` 的 ETH，并作为 call value 发送。
             callValue = inputAmount;
         } else {
-            // Approve SpokePool to pull ERC20 from router
+            // ERC20 路径由路由器授权 SpokePool 拉取本次存款数量。
             IERC20(params.inputToken).forceApprove(address(SPOKE_POOL), inputAmount);
         }
 

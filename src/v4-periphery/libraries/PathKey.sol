@@ -15,14 +15,14 @@ struct PathKey {
 
 using PathKeyLibrary for PathKey global;
 
-/// @title PathKey Library
-/// @notice Functions for working with PathKeys
+/// @title PathKey 路径库
+/// @notice 根据当前输入货币和下一跳描述构造规范化 PoolKey，并确定兑换方向。
 library PathKeyLibrary {
-    /// @notice Get the pool and swap direction for a given PathKey
-    /// @param params the given PathKey
-    /// @param currencyIn the input currency
-    /// @return poolKey the pool key of the swap
-    /// @return zeroForOne the direction of the swap, true if currency0 is being swapped for currency1
+    /// @notice 获取一个 PathKey 对应的池和兑换方向。
+    /// @param params 当前路径段，包含下一种货币、费率、tickSpacing、hook 和 hookData。
+    /// @param currencyIn 当前跳输入货币。
+    /// @return poolKey 按货币地址排序后的池键。
+    /// @return zeroForOne 输入为 currency0、输出为 currency1 时返回 true。
     function getPoolAndSwapDirection(PathKey calldata params, Currency currencyIn)
         internal
         pure

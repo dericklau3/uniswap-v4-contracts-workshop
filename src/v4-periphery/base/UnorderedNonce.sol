@@ -3,15 +3,15 @@ pragma solidity ^0.8.0;
 
 import {IUnorderedNonce} from "../interfaces/IUnorderedNonce.sol";
 
-/// @title Unordered Nonce
-/// @notice Contract state and methods for using unordered nonces in signatures
+/// @title 无序 Nonce
+/// @notice 用 bitmap 管理签名 nonce，使用户可并行签署和独立撤销，不必按递增顺序使用。
 contract UnorderedNonce is IUnorderedNonce {
-    /// @inheritdoc IUnorderedNonce
+    /// @notice 记录每个 owner 已消费的 nonce 位图；每个 word 容纳 256 个 nonce。
     mapping(address owner => mapping(uint256 word => uint256 bitmap)) public nonces;
 
-    /// @notice Consume a nonce, reverting if it has already been used
-    /// @param owner address, the owner/signer of the nonce
-    /// @param nonce uint256, the nonce to consume. The top 248 bits are the word, the bottom 8 bits indicate the bit position
+    /// @notice 消费一个 nonce；若对应位已经置位，则回退。
+    /// @param owner nonce 所属的签名者地址。
+    /// @param nonce 要消费的 nonce；高 248 位是 word 索引，低 8 位是该 word 中的 bit 位置。
     function _useUnorderedNonce(address owner, uint256 nonce) internal {
         uint256 wordPos = nonce >> 8;
         uint256 bitPos = uint8(nonce);
@@ -21,7 +21,8 @@ contract UnorderedNonce is IUnorderedNonce {
         if (flipped & bit == 0) revert NonceAlreadyUsed();
     }
 
-    /// @inheritdoc IUnorderedNonce
+    /// @notice 由调用者主动消费一个尚未上链的 nonce，使相关签名永久失效。
+    /// @param nonce 要撤销的无序 nonce。
     function revokeNonce(uint256 nonce) external payable {
         _useUnorderedNonce(msg.sender, nonce);
     }

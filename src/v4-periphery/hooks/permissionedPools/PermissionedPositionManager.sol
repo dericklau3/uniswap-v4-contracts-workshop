@@ -42,7 +42,7 @@ contract PermissionedPositionManager is PositionManager {
     error NotPermissionsAdapterAdmin();
     error NoVerifiedAdapter();
 
-    /// @dev as this contract must know the hooks address in advance, it must be passed in as a constructor argument
+    /// @dev 本合约需要通过工厂验证 adapter 并在铸仓前检查 hook 白名单，因此部署时必须注入 adapter 工厂。
     constructor(
         IPoolManager _poolManager,
         IAllowanceTransfer _permit2,
@@ -52,18 +52,17 @@ contract PermissionedPositionManager is PositionManager {
         IPermissionsAdapterFactory _permissionsAdapterFactory
     ) PositionManager(_poolManager, _permit2, _unsubscribeGasLimit, _tokenDescriptor, _weth9) {
         PERMISSIONS_ADAPTER_FACTORY = _permissionsAdapterFactory;
-        /// @dev The EIP712 domain separator still uses "Uniswap v4 Positions NFT" as the name
+        /// @dev EIP-712 域分隔符仍使用构造父合约时的名称 "Uniswap v4 Positions NFT"，不可随展示名称一起改变。
         name = "Uniswap v4 Permissioned Positions NFT";
         symbol = "UNI-V4-PERM-POSM";
     }
 
-    /// @notice Sets the allowed hook for a given permissions adapter
-    /// @dev Sets which hooks are allowed to be used with a permissions adapter. Only callable by the owner of the permissions adapter.
-    ///      Revoking a hook (setting `allowed` to false) blocks future mints and liquidity increases on existing positions that use
-    ///      that hook; existing liquidity can still be decreased or burned so that holders can always exit.
-    /// @param currency The currency of the permissions adapter
-    /// @param hooks The hook to set the allowance for
-    /// @param allowed Whether the hook is allowed to be used with the permissions adapter
+    /// @notice 配置某个权限 adapter 货币允许搭配使用的 V4 hook。
+    /// @dev 仅 adapter owner 可调用。撤销 hook 后，会阻止新铸仓及现有仓位继续增加流动性；
+    /// 减少流动性和销毁不受影响，确保用户权限被撤销后仍然能够退出。
+    /// @param currency 权限 adapter 本身作为 V4 池货币的地址封装。
+    /// @param hooks 要配置的 hook。
+    /// @param allowed 是否允许该 adapter 与 hook 组合。
     function setAllowedHook(Currency currency, IHooks hooks, bool allowed) external {
         if (_getOwner(currency) != msg.sender) {
             revert NotPermissionsAdapterAdmin();
@@ -74,11 +73,11 @@ contract PermissionedPositionManager is PositionManager {
         emit AllowedHooksUpdated(currency, hooks, allowed);
     }
 
-    /// @notice Force-exit the LP from a position. Burns the NFT, unwinds liquidity, and routes each currency.
-    /// @dev Either PA admin may call. Per-currency fallback is derived on-chain via `_getOwner` (see
-    ///      `_unwindWithFallback`). The 6909 fallback never reverts, so the call is atomic. Emits one
-    ///      `CurrencyUnwound` event per leg.
-    /// @param tokenId The position to unwind
+    /// @notice 强制 LP 退出仓位：取消订阅、销毁 NFT、移除全部流动性，并分别路由两种货币。
+    /// @dev 任一侧权限 adapter 的管理员均可调用。每种货币的兜底接收人由 `_getOwner` 链上确定；
+    /// 若底层代币因合规限制无法转给 LP 或管理员，则铸造 ERC-6909 claim，因此整个退出保持原子且最终分支不回退。
+    /// 每一侧货币都会发出一个 `CurrencyUnwound`。
+    /// @param tokenId 要强制退出的仓位 NFT。
     function unwindPosition(uint256 tokenId) external isNotLocked {
         (PoolKey memory poolKey,) = getPoolAndPositionInfo(tokenId);
         address admin0 = _getOwner(poolKey.currency0);
@@ -87,8 +86,8 @@ contract PermissionedPositionManager is PositionManager {
 
         address lp = ownerOf(tokenId);
 
-        // Pre-approve so BURN_POSITION inside the unlock passes its onlyIfApproved check.
-        // ERC-721 _burn clears getApproved as part of its teardown, so the approval is self-cleaning.
+        // 预先授权管理员，使 unlock 内的 BURN_POSITION 通过 onlyIfApproved。
+        // ERC-721 _burn 会清除 getApproved，因此该临时授权会随销毁自动清理。
         getApproved[tokenId] = msg.sender;
 
         bytes memory actions = abi.encodePacked(
@@ -100,20 +99,19 @@ contract PermissionedPositionManager is PositionManager {
         bytes[] memory params = new bytes[](4);
         params[0] = abi.encode(tokenId);
         params[1] = abi.encode(tokenId, uint128(0), uint128(0), bytes(""));
-        // PoolKey is encoded into the unwind params because BURN_POSITION clears positionInfo[tokenId].
+        // BURN_POSITION 会清空 positionInfo[tokenId]，所以后续退出动作必须自带完整 PoolKey。
         params[2] = abi.encode(poolKey, poolKey.currency0, lp, tokenId);
         params[3] = abi.encode(poolKey, poolKey.currency1, lp, tokenId);
         poolManager.unlock(abi.encode(actions, params));
     }
 
-    /// @notice Burn an ERC-6909 claim on the PoolManager and transfer the underlying currency to `to`.
-    /// @dev Caller must hold the claim or have called PoolManager.setOperator(permPosm, true). For permissioned
-    ///      currencies, `to` must clear the underlying token's issuer compliance on unwrap. `to` follows the
-    ///      standard `Actions.TAKE` recipient sentinels: `address(1)` remaps to the caller, `address(2)` to this
-    ///      contract. Sentinels are resolved before both the underlying delivery and the `ClaimWithdrawn` event.
-    /// @param currency The currency whose 6909 claim is being burned
-    /// @param amount The amount of claim to burn (and underlying to deliver)
-    /// @param to The recipient of the underlying currency
+    /// @notice 销毁 `PoolManager` 中的 ERC-6909 claim，并把对应底层货币转给 `to`。
+    /// @dev 调用者必须持有 claim，或已通过 `PoolManager.setOperator(permPosm, true)` 授权本合约。
+    /// 对权限货币，`to` 还必须通过发行方在解包时执行的合规校验。`to` 支持标准 `Actions.TAKE`
+    /// 哨兵地址：`address(1)` 映射为调用者，`address(2)` 映射为本合约；事件记录解析后的真实地址。
+    /// @param currency 要销毁 claim 并提取底层资产的货币。
+    /// @param amount claim 销毁数量及对应底层资产数量。
+    /// @param to 底层货币收款人或特殊哨兵地址。
     function withdrawClaim(Currency currency, uint256 amount, address to) external isNotLocked {
         address resolvedTo = _mapRecipient(to);
         bytes memory actions = abi.encodePacked(uint8(Actions.BURN_6909), uint8(Actions.TAKE));
@@ -125,8 +123,8 @@ contract PermissionedPositionManager is PositionManager {
         emit ClaimWithdrawn(currency, msg.sender, resolvedTo, amount);
     }
 
-    /// @inheritdoc PositionManager
-    /// @dev Positions of permissioned tokens are not transferable.
+    /// @notice 权限代币仓位 NFT 不允许转让。
+    /// @dev 仓位 owner 是持续合规校验的一部分；转让会绕过铸仓时的 `LIQUIDITY_ALLOWED` 检查，因此始终回退。
     function transferFrom(address from, address to, uint256 id) public override onlyIfPoolManagerLocked {
         revert TransferDisabled();
     }
@@ -139,10 +137,9 @@ contract PermissionedPositionManager is PositionManager {
         revert TransferDisabled();
     }
 
-    /// @dev When minting a position, verify that the sender is allowed to mint the position. This prevents a disallowed user from minting one sided liquidity.
-    ///      Also rejects pools where neither side is a verified permissions adapter — those positions provide no
-    ///      permissioning value over the base PositionManager and would otherwise be permanently non-transferable
-    ///      (see `transferFrom`), so the manager refuses to mint them.
+    /// @dev 铸仓时校验 owner 对每种权限货币均拥有 `LIQUIDITY_ALLOWED`，防止不合规账户通过单边流动性进入池。
+    /// 同时要求至少一侧是工厂验证过的 adapter；两侧都不是权限资产时使用本合约没有额外价值，
+    /// 却会得到永久不可转让的 NFT，因此直接拒绝。
     function _mint(
         PoolKey calldata poolKey,
         int24 tickLower,
@@ -153,23 +150,21 @@ contract PermissionedPositionManager is PositionManager {
         address owner,
         bytes calldata hookData
     ) internal override {
-        // require at least one currency to be a verified permissions adapter
+        // 至少一侧货币必须是工厂验证过的权限 adapter。
         if (
             _verifiedPermissionedTokenOf(poolKey.currency0) == address(0)
                 && _verifiedPermissionedTokenOf(poolKey.currency1) == address(0)
         ) revert NoVerifiedAdapter();
-        // allowlist is verified in the hook call
+        // 用户权限在 adapter/hook 调用链中校验；此处另外确认 hook 本身获得发行方管理员允许。
         if (!_checkAllowedHooks(poolKey)) revert InvalidHook();
         _checkRecipientAllowed(poolKey.currency0, owner);
         _checkRecipientAllowed(poolKey.currency1, owner);
         super._mint(poolKey, tickLower, tickUpper, liquidity, amount0Max, amount1Max, owner, hookData);
     }
 
-    /// @dev Re-validate the hook allowlist on every liquidity increase so that a revoked hook cannot
-    ///      continue to accept new inflows on existing positions. Also re-check that the position owner
-    ///      still clears `LIQUIDITY_ALLOWED` for each permissioned currency. Decrease and burn paths are
-    ///      intentionally left unchecked so that holders can always exit positions even after their
-    ///      permissions or the hook have been revoked.
+    /// @dev 每次增仓都重新检查 hook 白名单，防止已撤销 hook 继续通过旧仓位接收新增资金；
+    /// 也重新确认仓位 owner 对每种权限货币仍具备 `LIQUIDITY_ALLOWED`。
+    /// 减仓和销毁刻意不做这些检查，确保权限或 hook 被撤销后持有人仍可退出。
     function _increase(
         uint256 tokenId,
         uint256 liquidity,
@@ -185,7 +180,7 @@ contract PermissionedPositionManager is PositionManager {
         super._increase(tokenId, liquidity, amount0Max, amount1Max, hookData);
     }
 
-    /// @dev See `_increase` — same rationale for the from-deltas variant.
+    /// @dev delta 推导增仓版本沿用 `_increase` 的 hook 与持有人权限复检；该入口本身仍是已弃用路径。
     function _increaseFromDeltas(uint256 tokenId, uint128 amount0Max, uint128 amount1Max, bytes calldata hookData)
         internal
         override
@@ -217,17 +212,18 @@ contract PermissionedPositionManager is PositionManager {
         return isAllowedHooks[currency][hooks];
     }
 
-    /// @dev When paying to settle, if the currency is a permissioned token, wrap the token and transfer it to the pool manager.
+    /// @dev 结算权限货币时，先把底层权限代币转入 adapter，再由 adapter 向 `PoolManager` 铸造等额包装币。
+    /// 同时按原始用户而非中间付款合约检查 `LIQUIDITY_ALLOWED`，维持真实参与者的合规边界。
     function _pay(Currency currency, address payer, uint256 amount) internal virtual override {
         address permissionedToken = _verifiedPermissionedTokenOf(currency);
         if (permissionedToken == address(0)) {
-            // token is not a permissioned token, use the default implementation
+            // 普通货币沿用基础 PositionManager 的 Permit2/自有余额付款路径。
             super._pay(currency, payer, amount);
             return;
         }
-        // token is permissioned, wrap the token and transfer it to the pool manager
+        // 权限货币必须经 adapter 包装后，才能成为 PoolManager 内部持有的池货币。
         IPermissionsAdapter permissionsAdapter = IPermissionsAdapter(Currency.unwrap(currency));
-        // Check liquidity permission for the actual user
+        // 对真实原始用户检查流动性权限，不能只检查代付地址或路由合约。
         if (!permissionsAdapter.isAllowed(msgSender(), PermissionFlags.LIQUIDITY_ALLOWED)) {
             revert Unauthorized();
         }
@@ -243,7 +239,7 @@ contract PermissionedPositionManager is PositionManager {
         return PERMISSIONS_ADAPTER_FACTORY.verifiedPermissionsAdapterOf(Currency.unwrap(currency));
     }
 
-    /// @notice Calculates the amount for a settle action
+    /// @notice 解析结算数量；权限 adapter 货币使用本合约持有的底层代币余额，而不是 adapter token 余额。
     function _mapSettleAmount(uint256 amount, Currency currency) internal view override returns (uint256) {
         address permissionedToken = _verifiedPermissionedTokenOf(currency);
         if (permissionedToken == address(0) || amount != ActionConstants.CONTRACT_BALANCE) {
@@ -252,10 +248,9 @@ contract PermissionedPositionManager is PositionManager {
         return Currency.wrap(permissionedToken).balanceOfSelf();
     }
 
-    /// @dev When a TAKE is performed with the adapter currency to this contract, the adapter's
-    /// _update hook unwraps the adapter tokens, so this contract ends up holding the underlying
-    /// permissioned token — not the adapter token. Sweep the underlying to avoid leaving
-    /// tokens behind that a later caller could claim.
+    /// @dev 当 adapter 货币通过 TAKE 转给本合约时，adapter 的 `_update` 会自动解包，
+    /// 因而本合约最终持有的是底层权限代币而非 adapter token。必须扫转底层资产，
+    /// 避免余额残留并被后续调用者通过共享路由上下文领取。
     function _sweep(Currency currency, address to) internal override {
         address permissionedToken = _verifiedPermissionedTokenOf(currency);
         if (permissionedToken == address(0)) {
@@ -274,13 +269,13 @@ contract PermissionedPositionManager is PositionManager {
         return IPermissionsAdapter(permissionsAdapter).owner();
     }
 
-    /// @dev Adds the cascade-routing action used by `unwindPosition` and the BURN_6909 primitive used by
-    ///      `withdrawClaim`. All other actions fall through to the base PositionManager dispatcher.
+    /// @dev 增加 `unwindPosition` 使用的级联路由动作、取消订阅动作和 `withdrawClaim` 使用的 BURN_6909 原语；
+    /// 其他动作继续交给基础 `PositionManager` 分派。
     function _handleAction(uint256 action, bytes calldata params) internal override {
         if (action == Actions.UNWIND_WITH_FALLBACK) {
             (PoolKey memory poolKey, Currency currency, address lp, uint256 tokenId) =
                 abi.decode(params, (PoolKey, Currency, address, uint256));
-            // Caller must be an admin of a permissions adapter in the position.
+            // 调用者必须是该仓位任一权限 adapter 的管理员，且 currency 必须属于该 PoolKey。
             address sender = msgSender();
             if (!((currency == poolKey.currency0 || currency == poolKey.currency1)
                         && (sender == _getOwner(poolKey.currency0) || sender == _getOwner(poolKey.currency1)))) revert Unauthorized();
@@ -289,14 +284,14 @@ contract PermissionedPositionManager is PositionManager {
         }
         if (action == Actions.UNSUBSCRIBE) {
             uint256 tokenId = abi.decode(params, (uint256));
-            // Caller must own or be approved on the position.
+            // 取消订阅前，调用者必须拥有仓位或获得 ERC-721 授权。
             if (!_isApprovedOrOwner(msgSender(), tokenId)) revert NotApproved(msgSender());
             if (positionInfo[tokenId].hasSubscriber()) _unsubscribe(tokenId);
             return;
         }
         if (action == Actions.BURN_6909) {
             (Currency currency, address from, uint256 amount) = params.decodeCurrencyAddressAndUint256();
-            // validate claim owner is the action executor before burning
+            // 只允许动作执行者销毁自己的 claim，不能借内部动作指定任意受害者。
             if (from != msgSender()) revert Unauthorized();
             poolManager.burn(from, currency.toId(), amount);
             return;
@@ -304,34 +299,34 @@ contract PermissionedPositionManager is PositionManager {
         super._handleAction(action, params);
     }
 
-    /// @dev Permissioned currencies cascade `take → LP → admin → 6909 mint to admin`. Non-permissioned currencies
-    ///      cascade `take → LP → 6909 mint to LP` — admins cannot take regular ERC-20s, so the LP
-    ///      retains ownership as a transferable claim. Final mint never reverts. Emits `CurrencyUnwound` on the
-    ///      terminal branch with `recipient`/`asClaim` reflecting the actual destination.
+    /// @dev 权限货币按 `take 给 LP → take 给管理员 → 给管理员铸造 6909 claim` 级联；
+    /// 普通货币按 `take 给 LP → 给 LP 铸造 6909 claim` 级联，管理员无权取得普通 ERC-20。
+    /// 最后的 claim 铸造不会因接收方代币合规规则回退，因此保证退出可完成。
+    /// `CurrencyUnwound` 的 `recipient/asClaim` 记录实际最终去向。
     function _unwindWithFallback(Currency currency, address lp, uint256 tokenId) internal {
         uint256 amount = _getFullCredit(currency);
         if (amount == 0) return;
 
-        // Try to take to LP
+        // 首选把底层货币直接交还原 LP。
         try poolManager.take(currency, lp, amount) {
             emit CurrencyUnwound(tokenId, currency, lp, msgSender(), lp, amount, false);
             return;
         } catch {}
 
-        // If LP is not allowed to receive the currency, try to take to admin
+        // 若 LP 因合规限制不能接收权限货币，尝试交给 adapter 管理员。
         address admin = _getOwner(currency);
-        // If no admin, LP retains ownership as a 6909 claim
+        // 普通货币没有 adapter 管理员，由 LP 以可转让 6909 claim 继续持有经济权益。
         if (admin == address(0)) {
             poolManager.mint(lp, currency.toId(), amount);
             emit CurrencyUnwound(tokenId, currency, lp, msgSender(), lp, amount, true);
             return;
         }
-        // Try to take to admin
+        // 权限货币的第二顺位是直接转给发行方/adapter 管理员。
         try poolManager.take(currency, admin, amount) {
             emit CurrencyUnwound(tokenId, currency, admin, msgSender(), lp, amount, false);
             return;
         } catch {}
-        // If admin is not allowed to receive the currency, mint a 6909 claim to admin
+        // 若管理员也无法接收底层代币，则给管理员铸造 PoolManager 内部 claim 作为最终兜底。
         poolManager.mint(admin, currency.toId(), amount);
         emit CurrencyUnwound(tokenId, currency, admin, msgSender(), lp, amount, true);
     }

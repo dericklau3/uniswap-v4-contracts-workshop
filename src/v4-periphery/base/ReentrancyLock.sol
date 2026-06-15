@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Locker} from "../libraries/Locker.sol";
 
-/// @notice A transient reentrancy lock, that stores the caller's address as the lock
+/// @notice 使用瞬时存储实现的重入锁，并把原始调用者地址同时保存为当前 locker。
 contract ReentrancyLock {
     error ContractLocked();
 

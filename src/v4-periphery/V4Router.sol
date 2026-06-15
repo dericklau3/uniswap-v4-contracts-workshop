@@ -18,10 +18,10 @@ import {ActionConstants} from "./libraries/ActionConstants.sol";
 import {BipsLibrary} from "./libraries/BipsLibrary.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 
-/// @title UniswapV4Router
-/// @notice Abstract contract that contains all internal logic needed for routing through Uniswap v4 pools
-/// @dev the entry point to executing actions in this contract is calling `BaseActionsRouter._executeActions`
-/// An inheriting contract should call _executeActions at the point that they wish actions to be executed
+/// @title Uniswap V4 路由核心
+/// @notice 封装单跳、多跳、精确输入和精确输出兑换，以及兑换后资金结算所需的内部逻辑。
+/// @dev 继承合约应在自己的外部入口调用 `BaseActionsRouter._executeActions`。兑换会先在 `PoolManager`
+/// 中形成瞬时正负 delta，再由后续 `SETTLE`、`TAKE` 等动作完成付款和收款，因此整个批次必须原子执行。
 abstract contract V4Router is IV4Router, BaseActionsRouter, DeltaResolver {
     using SafeCast for *;
     using CalldataDecoder for bytes;
@@ -32,7 +32,7 @@ abstract contract V4Router is IV4Router, BaseActionsRouter, DeltaResolver {
     constructor(IPoolManager _poolManager) BaseActionsRouter(_poolManager) {}
 
     function _handleAction(uint256 action, bytes calldata params) internal override {
-        // swap actions and payment actions in different blocks for gas efficiency
+        // 动作编号按兑换类和支付类分区，先比较区间再分派可减少重复判断和 gas。
         if (action < Actions.SETTLE) {
             if (action == Actions.SWAP_EXACT_IN) {
                 IV4Router.ExactInputParams calldata swapParams = params.decodeSwapExactInParams();
@@ -100,7 +100,7 @@ abstract contract V4Router is IV4Router, BaseActionsRouter, DeltaResolver {
 
     function _swapExactInput(IV4Router.ExactInputParams calldata params) private {
         unchecked {
-            // Caching for gas savings
+            // 缓存路径长度及中间变量，避免循环内重复读取 calldata。
             uint256 pathLength = params.path.length;
             uint128 amountOut;
             Currency currencyIn = params.currencyIn;
@@ -114,7 +114,7 @@ abstract contract V4Router is IV4Router, BaseActionsRouter, DeltaResolver {
             for (uint256 i = 0; i < pathLength; i++) {
                 pathKey = params.path[i];
                 (PoolKey memory poolKey, bool zeroForOne) = pathKey.getPoolAndSwapDirection(currencyIn);
-                // The output delta will always be positive, except for when interacting with certain hook pools
+                // 常规池的输出侧 delta 为正；某些会返回自定义 delta 的 hook 池可能改变这一符号约定。
                 amountOut = _swap(poolKey, zeroForOne, -int256(uint256(amountIn)), pathKey.hookData).toUint128();
 
                 if (perHopPriceLength != 0) {
@@ -152,7 +152,7 @@ abstract contract V4Router is IV4Router, BaseActionsRouter, DeltaResolver {
 
     function _swapExactOutput(IV4Router.ExactOutputParams calldata params) private {
         unchecked {
-            // Caching for gas savings
+            // 缓存路径长度及中间变量，精确输出需要从最终输出币沿路径反向推算输入。
             uint256 pathLength = params.path.length;
             uint128 amountIn;
             uint128 amountOut = params.amountOut;
@@ -169,7 +169,7 @@ abstract contract V4Router is IV4Router, BaseActionsRouter, DeltaResolver {
             for (uint256 i = pathLength; i > 0; i--) {
                 pathKey = params.path[i - 1];
                 (PoolKey memory poolKey, bool oneForZero) = pathKey.getPoolAndSwapDirection(currencyOut);
-                // The output delta will always be negative, except for when interacting with certain hook pools
+                // 反向推算时该中间量代表下一跳所需输入，常规池对应负 delta；自定义 delta hook 可能例外。
                 amountIn = (uint256(-int256(_swap(poolKey, !oneForZero, int256(uint256(amountOut)), pathKey.hookData))))
                 .toUint128();
 
@@ -189,7 +189,8 @@ abstract contract V4Router is IV4Router, BaseActionsRouter, DeltaResolver {
         private
         returns (int128 reciprocalAmount)
     {
-        // for protection of exactOut swaps, sqrtPriceLimit is not exposed as a feature in this contract
+        // 路由不向调用者开放任意 sqrtPriceLimit：精确输出必须允许价格在协议边界内继续移动，
+        // 最终由 amountInMaximum 和逐跳 minHopPriceX36 约束成本，避免半途触价后只成交部分输出。
         unchecked {
             BalanceDelta delta = poolManager.swap(
                 poolKey,

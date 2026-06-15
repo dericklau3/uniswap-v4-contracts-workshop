@@ -9,16 +9,16 @@ struct UniswapParameters {
 }
 
 contract UniswapImmutables {
-    /// @notice The address of UniswapV2Factory
+    /// @notice Uniswap V2 Factory 地址，用于确定性计算 Pair 地址。
     address internal immutable UNISWAP_V2_FACTORY;
 
-    /// @notice The UniswapV2Pair initcodehash
+    /// @notice Uniswap V2 Pair init code hash，与 Factory 一起用于 CREATE2 地址推导。
     bytes32 internal immutable UNISWAP_V2_PAIR_INIT_CODE_HASH;
 
-    /// @notice The address of UniswapV3Factory
+    /// @notice Uniswap V3 Factory 地址，用于确定性计算 Pool 地址。
     address internal immutable UNISWAP_V3_FACTORY;
 
-    /// @notice The UniswapV3Pool initcodehash
+    /// @notice Uniswap V3 Pool init code hash，与 Factory、token 和 fee 一起用于 CREATE2 地址推导。
     bytes32 internal immutable UNISWAP_V3_POOL_INIT_CODE_HASH;
 
     constructor(UniswapParameters memory params) {

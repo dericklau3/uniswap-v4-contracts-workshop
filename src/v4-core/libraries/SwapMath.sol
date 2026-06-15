@@ -4,29 +4,30 @@ pragma solidity ^0.8.0;
 import {FullMath} from "./FullMath.sol";
 import {SqrtPriceMath} from "./SqrtPriceMath.sol";
 
-/// @title Computes the result of a swap within ticks
-/// @notice Contains methods for computing the result of a swap within a single tick price range, i.e., a single tick.
+/// @title 计算单个 tick 区间内的一步兑换结果
+/// @notice 在当前有效流动性保持不变的价格区间内，计算本步兑换后的价格、输入、输出与手续费。
+/// @dev 一次完整 swap 可能跨越多个已初始化 tick；Pool.swap 会循环调用本库，每跨过边界后更新流动性再继续。
 library SwapMath {
-    /// @notice the swap fee is represented in hundredths of a bip, so the max is 100%
-    /// @dev the swap fee is the total fee on a swap, including both LP and Protocol fee
+    /// @notice swap fee 以百分之一 bip 表示，因此最大值 1e6 对应 100%。
+    /// @dev swap fee 是本次兑换的总费率，包含 LP fee 与 Protocol fee 的组合效果。
     uint256 internal constant MAX_SWAP_FEE = 1e6;
 
-    /// @notice Computes the sqrt price target for the next swap step
-    /// @param zeroForOne The direction of the swap, true for currency0 to currency1, false for currency1 to currency0
-    /// @param sqrtPriceNextX96 The Q64.96 sqrt price for the next initialized tick
-    /// @param sqrtPriceLimitX96 The Q64.96 sqrt price limit. If zero for one, the price cannot be less than this value
-    /// after the swap. If one for zero, the price cannot be greater than this value after the swap
-    /// @return sqrtPriceTargetX96 The price target for the next swap step
+    /// @notice 根据下一初始化 tick 与用户价格限制，计算本步实际可到达的平方根价格目标。
+    /// @param zeroForOne 兑换方向；true 为 currency0 换 currency1，false 为 currency1 换 currency0。
+    /// @param sqrtPriceNextX96 下一条已初始化 tick 对应的 Q64.96 平方根价格。
+    /// @param sqrtPriceLimitX96 用户设置的 Q64.96 平方根价格限制。zeroForOne 时成交后价格不能低于该值；
+    ///        oneForZero 时成交后价格不能高于该值。
+    /// @return sqrtPriceTargetX96 本步兑换应使用的价格目标。
     function getSqrtPriceTarget(bool zeroForOne, uint160 sqrtPriceNextX96, uint160 sqrtPriceLimitX96)
         internal
         pure
         returns (uint160 sqrtPriceTargetX96)
     {
         assembly ("memory-safe") {
-            // a flag to toggle between sqrtPriceNextX96 and sqrtPriceLimitX96
-            // when zeroForOne == true, nextOrLimit reduces to sqrtPriceNextX96 >= sqrtPriceLimitX96
+            // 使用标志在 sqrtPriceNextX96 与 sqrtPriceLimitX96 之间选择。
+            // zeroForOne == true 时，nextOrLimit 等价于 sqrtPriceNextX96 >= sqrtPriceLimitX96，
             // sqrtPriceTargetX96 = max(sqrtPriceNextX96, sqrtPriceLimitX96)
-            // when zeroForOne == false, nextOrLimit reduces to sqrtPriceNextX96 < sqrtPriceLimitX96
+            // zeroForOne == false 时，nextOrLimit 等价于 sqrtPriceNextX96 < sqrtPriceLimitX96，
             // sqrtPriceTargetX96 = min(sqrtPriceNextX96, sqrtPriceLimitX96)
             sqrtPriceNextX96 := and(sqrtPriceNextX96, 0xffffffffffffffffffffffffffffffffffffffff)
             sqrtPriceLimitX96 := and(sqrtPriceLimitX96, 0xffffffffffffffffffffffffffffffffffffffff)
@@ -36,18 +37,19 @@ library SwapMath {
         }
     }
 
-    /// @notice Computes the result of swapping some amount in, or amount out, given the parameters of the swap
-    /// @dev If the swap's amountSpecified is negative, the combined fee and input amount will never exceed the absolute value of the remaining amount.
-    /// @param sqrtPriceCurrentX96 The current sqrt price of the pool
-    /// @param sqrtPriceTargetX96 The price that cannot be exceeded, from which the direction of the swap is inferred
-    /// @param liquidity The usable liquidity
-    /// @param amountRemaining How much input or output amount is remaining to be swapped in/out
-    /// @param feePips The fee taken from the input amount, expressed in hundredths of a bip
-    /// @return sqrtPriceNextX96 The price after swapping the amount in/out, not to exceed the price target
-    /// @return amountIn The amount to be swapped in, of either currency0 or currency1, based on the direction of the swap
-    /// @return amountOut The amount to be received, of either currency0 or currency1, based on the direction of the swap
-    /// @return feeAmount The amount of input that will be taken as a fee
-    /// @dev feePips must be no larger than MAX_SWAP_FEE for this function. We ensure that before setting a fee using LPFeeLibrary.isValid.
+    /// @notice 根据兑换参数，计算本步消耗多少输入、产生多少输出以及价格移动到哪里。
+    /// @dev amountRemaining < 0 表示 exactIn；输入与手续费之和绝不会超过剩余输入的绝对值。
+    ///      amountRemaining > 0 表示 exactOut；为保证池不会少收，所需输入与手续费采用向上取整。
+    /// @param sqrtPriceCurrentX96 池当前平方根价格。
+    /// @param sqrtPriceTargetX96 本步不能越过的目标价格，兑换方向也由当前价与目标价的大小关系推导。
+    /// @param liquidity 当前 tick 区间内可用的活跃流动性。
+    /// @param amountRemaining 尚待兑换的输入量或尚待获得的输出量。
+    /// @param feePips 从输入中收取的费率，以百分之一 bip 表示。
+    /// @return sqrtPriceNextX96 本步后的价格，不会越过目标价格。
+    /// @return amountIn 本步实际投入的 currency0 或 currency1 数量。
+    /// @return amountOut 本步实际获得的 currency0 或 currency1 数量。
+    /// @return feeAmount 本步从输入中收取的手续费数量。
+    /// @dev feePips 不得大于 MAX_SWAP_FEE；设置费率前由 LPFeeLibrary.isValid 保证该条件。
     function computeSwapStep(
         uint160 sqrtPriceCurrentX96,
         uint160 sqrtPriceTargetX96,
@@ -56,7 +58,7 @@ library SwapMath {
         uint24 feePips
     ) internal pure returns (uint160 sqrtPriceNextX96, uint256 amountIn, uint256 amountOut, uint256 feeAmount) {
         unchecked {
-            uint256 _feePips = feePips; // upcast once and cache
+            uint256 _feePips = feePips; // 只做一次向上类型转换并缓存。
             bool zeroForOne = sqrtPriceCurrentX96 >= sqrtPriceTargetX96;
             bool exactIn = amountRemaining < 0;
 
@@ -67,18 +69,18 @@ library SwapMath {
                     ? SqrtPriceMath.getAmount0Delta(sqrtPriceTargetX96, sqrtPriceCurrentX96, liquidity, true)
                     : SqrtPriceMath.getAmount1Delta(sqrtPriceCurrentX96, sqrtPriceTargetX96, liquidity, true);
                 if (amountRemainingLessFee >= amountIn) {
-                    // `amountIn` is capped by the target price
+                    // 剩余净输入足够到达目标价，因此 amountIn 由目标价格限制。
                     sqrtPriceNextX96 = sqrtPriceTargetX96;
                     feeAmount = _feePips == MAX_SWAP_FEE
-                        ? amountIn // amountIn is always 0 here, as amountRemainingLessFee == 0 and amountRemainingLessFee >= amountIn
+                        ? amountIn // 此处 amountIn 必为 0，因为 amountRemainingLessFee == 0 且仍需 >= amountIn。
                         : FullMath.mulDivRoundingUp(amountIn, _feePips, MAX_SWAP_FEE - _feePips);
                 } else {
-                    // exhaust the remaining amount
+                    // 净输入不足以到达目标价，耗尽本步剩余输入。
                     amountIn = amountRemainingLessFee;
                     sqrtPriceNextX96 = SqrtPriceMath.getNextSqrtPriceFromInput(
                         sqrtPriceCurrentX96, liquidity, amountRemainingLessFee, zeroForOne
                     );
-                    // we didn't reach the target, so take the remainder of the maximum input as fee
+                    // 未到达目标价，最大输入中扣除实际净输入后的全部余量都作为手续费。
                     feeAmount = uint256(-amountRemaining) - amountIn;
                 }
                 amountOut = zeroForOne
@@ -89,10 +91,10 @@ library SwapMath {
                     ? SqrtPriceMath.getAmount1Delta(sqrtPriceTargetX96, sqrtPriceCurrentX96, liquidity, false)
                     : SqrtPriceMath.getAmount0Delta(sqrtPriceCurrentX96, sqrtPriceTargetX96, liquidity, false);
                 if (uint256(amountRemaining) >= amountOut) {
-                    // `amountOut` is capped by the target price
+                    // 期望输出足够跨到目标价，因此 amountOut 由目标价格限制。
                     sqrtPriceNextX96 = sqrtPriceTargetX96;
                 } else {
-                    // cap the output amount to not exceed the remaining output amount
+                    // 期望输出不足以到达目标价，将输出限制为尚需获得的数量，避免超额输出。
                     amountOut = uint256(amountRemaining);
                     sqrtPriceNextX96 =
                         SqrtPriceMath.getNextSqrtPriceFromOutput(sqrtPriceCurrentX96, liquidity, amountOut, zeroForOne);
@@ -100,7 +102,7 @@ library SwapMath {
                 amountIn = zeroForOne
                     ? SqrtPriceMath.getAmount0Delta(sqrtPriceNextX96, sqrtPriceCurrentX96, liquidity, true)
                     : SqrtPriceMath.getAmount1Delta(sqrtPriceCurrentX96, sqrtPriceNextX96, liquidity, true);
-                // `feePips` cannot be `MAX_SWAP_FEE` for exact out
+                // exactOut 下 feePips 不能等于 MAX_SWAP_FEE，否则全部输入都成为手续费，无法产生指定输出。
                 feeAmount = FullMath.mulDivRoundingUp(amountIn, _feePips, MAX_SWAP_FEE - _feePips);
             }
         }

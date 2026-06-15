@@ -19,8 +19,8 @@ abstract contract BaseV4Quoter is SafeCallback {
 
     constructor(IPoolManager _poolManager) SafeCallback(_poolManager) {}
 
-    /// @dev Only this address may call this function. Used to mimic internal functions, using an
-    /// external call to catch and parse revert reasons
+    /// @dev 仅允许本合约通过外部自调用进入。这样既能模拟内部报价步骤，又能在上层 `try/catch`
+    /// 中捕获并解析报价函数主动抛出的 revert 数据，防止任意外部账户伪造报价执行路径。
     modifier selfOnly() {
         if (msg.sender != address(this)) revert NotSelf();
         _;
@@ -28,14 +28,14 @@ abstract contract BaseV4Quoter is SafeCallback {
 
     function _unlockCallback(bytes calldata data) internal override returns (bytes memory) {
         (bool success, bytes memory returnData) = address(this).call(data);
-        // Every quote path gathers a quote, and then reverts either with QuoteSwap(quoteAmount) or alternative error
+        // 每条报价路径最终都应回退：成功报价抛出 QuoteSwap(quoteAmount)，失败则抛出具体错误。
         if (success) revert UnexpectedCallSuccess();
-        // Bubble the revert string, whether a valid quote or an alternative error
+        // 无论是合法报价还是其他错误，都把原始 revert 数据交给上层解析。
         returnData.bubbleReason();
     }
 
-    /// @dev Execute a swap and return the balance delta
-    /// @notice if amountSpecified < 0, the swap is exactInput, otherwise exactOutput
+    /// @notice 模拟一次兑换并返回货币余额变化；`amountSpecified < 0` 表示精确输入，否则表示精确输出。
+    /// @dev 报价不结算资金，而是在 `PoolManager` 的解锁上下文中执行真实换算，随后通过 revert 回滚全部状态。
     function _swap(PoolKey memory poolKey, bool zeroForOne, int256 amountSpecified, bytes calldata hookData)
         internal
         returns (BalanceDelta swapDelta)
@@ -50,7 +50,7 @@ abstract contract BaseV4Quoter is SafeCallback {
             hookData
         );
 
-        // Check that the pool was not illiquid.
+        // 确认指定侧数量被完整成交；若到达价格边界仍未完成，说明池中可用流动性不足。
         int128 amountSpecifiedActual = (zeroForOne == (amountSpecified < 0)) ? swapDelta.amount0() : swapDelta.amount1();
         if (amountSpecifiedActual != amountSpecified) {
             revert NotEnoughLiquidity(poolKey.toId());

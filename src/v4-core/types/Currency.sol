@@ -26,59 +26,58 @@ function greaterThanOrEqualTo(Currency currency, Currency other) pure returns (b
 }
 
 /// @title CurrencyLibrary
-/// @dev This library allows for transferring and holding native tokens and ERC20 tokens
+/// @dev 统一封装原生币与 ERC20 token 的转账、余额查询和标识转换。
 library CurrencyLibrary {
-    /// @notice Additional context for ERC-7751 wrapped error when a native transfer fails
+    /// @notice 原生币转账失败时，为 ERC-7751 包装错误提供附加上下文。
     error NativeTransferFailed();
 
-    /// @notice Additional context for ERC-7751 wrapped error when an ERC20 transfer fails
+    /// @notice ERC20 转账失败时，为 ERC-7751 包装错误提供附加上下文。
     error ERC20TransferFailed();
 
-    /// @notice A constant to represent the native currency
+    /// @notice 用零地址表示原生货币的常量。
     Currency public constant ADDRESS_ZERO = Currency.wrap(address(0));
 
     function transfer(Currency currency, address to, uint256 amount) internal {
-        // altered from https://github.com/transmissions11/solmate/blob/44a9963d4c78111f77caa0e65d677b8b46d6f2e6/src/utils/SafeTransferLib.sol
-        // modified custom error selectors
+        // 改写自 https://github.com/transmissions11/solmate/blob/44a9963d4c78111f77caa0e65d677b8b46d6f2e6/src/utils/SafeTransferLib.sol
+        // 此处修改了 custom error selector。
 
         bool success;
         if (currency.isAddressZero()) {
             assembly ("memory-safe") {
-                // Transfer the ETH and revert if it fails.
+                // 转出 ETH，并在调用失败时回滚。
                 success := call(gas(), to, amount, 0, 0, 0, 0)
             }
-            // revert with NativeTransferFailed, containing the bubbled up error as an argument
+            // 使用 NativeTransferFailed 回滚，并把下层调用的错误数据作为参数向上冒泡。
             if (!success) {
                 CustomRevert.bubbleUpAndRevertWith(to, bytes4(0), NativeTransferFailed.selector);
             }
         } else {
             assembly ("memory-safe") {
-                // Get a pointer to some free memory.
+                // 取得空闲内存指针。
                 let fmp := mload(0x40)
 
-                // Write the abi-encoded calldata into memory, beginning with the function selector.
+                // 从函数 selector 开始，把 ABI 编码后的 calldata 写入内存。
                 mstore(fmp, 0xa9059cbb00000000000000000000000000000000000000000000000000000000)
-                mstore(add(fmp, 4), and(to, 0xffffffffffffffffffffffffffffffffffffffff)) // Append and mask the "to" argument.
-                mstore(add(fmp, 36), amount) // Append the "amount" argument. Masking not required as it's a full 32 byte type.
+                mstore(add(fmp, 4), and(to, 0xffffffffffffffffffffffffffffffffffffffff)) // 追加并掩码处理 "to" 参数。
+                mstore(add(fmp, 36), amount) // 追加 "amount" 参数；完整 32 byte 类型不需要掩码。
 
                 success :=
                     and(
-                        // Set success to whether the call reverted, if not we check it either
-                        // returned exactly 1 (can't just be non-zero data), or had no return data.
+                        // 若调用未回滚，则要求返回值严格等于 1（不能只是非零），或者完全没有返回数据。
                         or(and(eq(mload(0), 1), gt(returndatasize(), 31)), iszero(returndatasize())),
-                        // We use 68 because the length of our calldata totals up like so: 4 + 32 * 2.
-                        // We use 0 and 32 to copy up to 32 bytes of return data into the scratch space.
-                        // Counterintuitively, this call must be positioned second to the or() call in the
-                        // surrounding and() call or else returndatasize() will be zero during the computation.
+                        // calldata 总长度为 4 + 32 * 2，因此这里使用 68。
+                        // 使用 0 和 32，把最多 32 byte 返回数据复制到 scratch space。
+                        // 注意：该 call 必须放在外围 and() 中 or() 的第二个操作数位置，
+                        // 否则计算前读取到的 returndatasize() 会是 0。
                         call(gas(), currency, 0, fmp, 68, 0, 32)
                     )
 
-                // Now clean the memory we used
-                mstore(fmp, 0) // 4 byte `selector` and 28 bytes of `to` were stored here
-                mstore(add(fmp, 0x20), 0) // 4 bytes of `to` and 28 bytes of `amount` were stored here
-                mstore(add(fmp, 0x40), 0) // 4 bytes of `amount` were stored here
+                // 清理刚才使用的内存。
+                mstore(fmp, 0) // 此处曾存放 4 byte `selector` 和 `to` 的前 28 byte。
+                mstore(add(fmp, 0x20), 0) // 此处曾存放 `to` 的后 4 byte 和 `amount` 的前 28 byte。
+                mstore(add(fmp, 0x40), 0) // 此处曾存放 `amount` 的后 4 byte。
             }
-            // revert with ERC20TransferFailed, containing the bubbled up error as an argument
+            // 使用 ERC20TransferFailed 回滚，并把下层 token 调用的错误数据作为参数向上冒泡。
             if (!success) {
                 CustomRevert.bubbleUpAndRevertWith(
                     Currency.unwrap(currency), IERC20Minimal.transfer.selector, ERC20TransferFailed.selector
@@ -111,8 +110,8 @@ library CurrencyLibrary {
         return uint160(Currency.unwrap(currency));
     }
 
-    // If the upper 12 bytes are non-zero, they will be zero-ed out
-    // Therefore, fromId() and toId() are not inverses of each other
+    // 若高 12 byte 非零，转换为 address 时会被截断清零。
+    // 因此 fromId() 与 toId() 并不总是互为逆运算。
     function fromId(uint256 id) internal pure returns (Currency) {
         return Currency.wrap(address(uint160(id)));
     }

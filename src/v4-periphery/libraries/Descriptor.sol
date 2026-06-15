@@ -9,9 +9,9 @@ import {Base64} from "openzeppelin-contracts/contracts/utils/Base64.sol";
 import {SVG} from "./SVG.sol";
 import {HexStrings} from "./HexStrings.sol";
 
-/// @title Descriptor
-/// @notice Describes NFT token positions
-/// @dev Reference: https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/NFTDescriptor.sol
+/// @title 仓位描述器
+/// @notice 把 V4 仓位的池、费率、价格区间和当前状态编码为 ERC-721 JSON 元数据及 SVG 图像。
+/// @dev 参考：https://github.com/Uniswap/v3-periphery/blob/main/contracts/libraries/NFTDescriptor.sol
 library Descriptor {
     using TickMath for int24;
     using Strings for uint256;
@@ -38,9 +38,9 @@ library Descriptor {
         address hooks;
     }
 
-    /// @notice Constructs the token URI for a Uniswap v4 NFT
-    /// @param params Parameters needed to construct the token URI
-    /// @return The token URI as a string
+    /// @notice 构造 Uniswap V4 仓位 NFT 的完整 token URI。
+    /// @param params 生成名称、描述和 SVG 所需的池与仓位参数。
+    /// @return Base64 编码 JSON 的 data URI 字符串。
     function constructTokenURI(ConstructTokenURIParams memory params) internal pure returns (string memory) {
         string memory name = generateName(params, feeToPercentString(params.fee));
         string memory descriptionPartOne = generateDescriptionPartOne(
@@ -80,26 +80,26 @@ library Descriptor {
         );
     }
 
-    /// @notice Escapes special characters in a string if they are present
+    /// @notice 对字符串中的 JSON 特殊控制字符添加反斜杠转义。
     function escapeSpecialCharacters(string memory symbol) internal pure returns (string memory) {
         bytes memory symbolBytes = bytes(symbol);
         uint8 specialCharCount = 0;
-        // count the amount of double quotes, form feeds, new lines, carriage returns, or tabs in the symbol
+        // 统计双引号、换页、换行、回车和制表符数量，以预分配转义后的数组。
         for (uint8 i = 0; i < symbolBytes.length; i++) {
             if (isSpecialCharacter(symbolBytes[i])) {
                 specialCharCount++;
             }
         }
         if (specialCharCount > 0) {
-            // create a new bytes array with enough space to hold the original bytes plus space for the backslashes to escape the special characters
+            // 新数组长度为原字符串加每个特殊字符前所需的反斜杠。
             bytes memory escapedBytes = new bytes(symbolBytes.length + specialCharCount);
             uint256 index;
             for (uint8 i = 0; i < symbolBytes.length; i++) {
-                // add a '\' before any double quotes, form feeds, new lines, carriage returns, or tabs
+                // 在双引号及各类控制字符前插入 '\'。
                 if (isSpecialCharacter(symbolBytes[i])) {
                     escapedBytes[index++] = "\\";
                 }
-                // copy each byte from original string to the new array
+                // 把原字符复制到新数组。
                 escapedBytes[index++] = symbolBytes[i];
             }
             return string(escapedBytes);
@@ -107,17 +107,17 @@ library Descriptor {
         return symbol;
     }
 
-    /// @notice Generates the first part of the description for a Uniswap v4 NFT
-    /// @param quoteCurrencySymbol The symbol of the quote currency
-    /// @param baseCurrencySymbol The symbol of the base currency
-    /// @param poolManager The address of the pool manager
-    /// @return The first part of the description
+    /// @notice 生成 Uniswap V4 仓位 NFT 描述文本的第一部分。
+    /// @param quoteCurrencySymbol 报价货币符号。
+    /// @param baseCurrencySymbol 基础货币符号。
+    /// @param poolManager PoolManager 地址。
+    /// @return 描述第一部分。
     function generateDescriptionPartOne(
         string memory quoteCurrencySymbol,
         string memory baseCurrencySymbol,
         string memory poolManager
     ) private pure returns (string memory) {
-        // displays quote currency first, then base currency
+        // 展示顺序先 quote 后 base，与价格 quote/base 的阅读顺序一致。
         return string(
             abi.encodePacked(
                 "This NFT represents a liquidity position in a Uniswap v4 ",
@@ -134,14 +134,14 @@ library Descriptor {
         );
     }
 
-    /// @notice Generates the second part of the description for a Uniswap v4 NFTs
-    /// @param tokenId The token ID
-    /// @param baseCurrencySymbol The symbol of the base currency
-    /// @param quoteCurrency The address of the quote currency
-    /// @param baseCurrency The address of the base currency
-    /// @param hooks The address of the hooks contract
-    /// @param feeTier The fee tier of the pool
-    /// @return The second part of the description
+    /// @notice 生成仓位 NFT 描述文本的第二部分，补充 token、货币、hook 与费率信息。
+    /// @param tokenId NFT token ID。
+    /// @param baseCurrencySymbol 基础货币符号。
+    /// @param quoteCurrency 报价货币地址。
+    /// @param baseCurrency 基础货币地址。
+    /// @param hooks hook 合约地址。
+    /// @param feeTier 池费率。
+    /// @return 描述第二部分。
     function generateDescriptionPartTwo(
         string memory tokenId,
         string memory baseCurrencySymbol,
@@ -170,16 +170,16 @@ library Descriptor {
         );
     }
 
-    /// @notice Generates the name for a Uniswap v4 NFT
-    /// @param params Parameters needed to generate the name
-    /// @param feeTier The fee tier of the pool
-    /// @return The name of the NFT
+    /// @notice 生成包含交易对、费率和价格区间的仓位 NFT 名称。
+    /// @param params 生成名称所需的仓位参数。
+    /// @param feeTier 池费率的百分比字符串。
+    /// @return NFT 名称。
     function generateName(ConstructTokenURIParams memory params, string memory feeTier)
         private
         pure
         returns (string memory)
     {
-        // image shows in terms of price, ie quoteCurrency/baseCurrency
+        // 图像中的价格统一按 quoteCurrency/baseCurrency 表示。
         return string(
             abi.encodePacked(
                 "Uniswap - ",
@@ -209,21 +209,21 @@ library Descriptor {
     }
 
     struct DecimalStringParams {
-        // significant figures of decimal
+        // 十进制字符串要保留的有效数字。
         uint256 sigfigs;
-        // length of decimal string
+        // 最终十进制字符串长度。
         uint8 bufferLength;
-        // ending index for significant figures (funtion works backwards when copying sigfigs)
+        // 有效数字结束索引；复制有效数字时会从后向前处理。
         uint8 sigfigIndex;
-        // index of decimal place (0 if no decimal)
+        // 小数点位置；0 表示不包含小数点。
         uint8 decimalIndex;
-        // start index for trailing/leading 0's for very small/large numbers
+        // 极小或极大数字需要补前导/尾随 0 的起始索引。
         uint8 zerosStartIndex;
-        // end index for trailing/leading 0's for very small/large numbers
+        // 补前导/尾随 0 的结束索引。
         uint8 zerosEndIndex;
-        // true if decimal number is less than one
+        // 十进制数是否小于 1。
         bool isLessThanOne;
-        // true if string should include "%"
+        // 输出字符串是否附带 "%"。
         bool isPercent;
     }
 
@@ -237,18 +237,18 @@ library Descriptor {
             buffer[1] = ".";
         }
 
-        // add leading/trailing 0's
+        // 写入前导或尾随 0。
         for (uint256 zerosCursor = params.zerosStartIndex; zerosCursor < params.zerosEndIndex + 1; zerosCursor++) {
-            // converts the ASCII code for 0 (which is 48) into a bytes1 to store in the buffer
+            // 把数字 0 的 ASCII 码 48 转为 bytes1 写入缓冲区。
             buffer[zerosCursor] = bytes1(uint8(48));
         }
-        // add sigfigs
+        // 写入有效数字。
         while (params.sigfigs > 0) {
             if (params.decimalIndex > 0 && params.sigfigIndex == params.decimalIndex) {
                 buffer[params.sigfigIndex--] = ".";
             }
             buffer[params.sigfigIndex] = bytes1(uint8(48 + (params.sigfigs % 10)));
-            // can overflow when sigfigIndex = 0
+            // sigfigIndex 为 0 时递减会下溢，因此在 unchecked 中依赖循环边界退出。
             unchecked {
                 params.sigfigIndex--;
             }
@@ -257,14 +257,14 @@ library Descriptor {
         return string(buffer);
     }
 
-    /// @notice Gets the price (quote/base) at a specific tick in decimal form
-    /// MIN or MAX are returned if tick is at the bottom or top of the price curve
-    /// @param tick The tick (either tickLower or tickUpper)
-    /// @param tickSpacing The tick spacing of the pool
-    /// @param baseCurrencyDecimals The decimals of the base currency
-    /// @param quoteCurrencyDecimals The decimals of the quote currency
-    /// @param flipRatio True if the ratio was flipped
-    /// @return The ratio value as a string
+    /// @notice 将指定 tick 对应的 quote/base 价格转换为十进制字符串。
+    /// @dev tick 位于价格曲线底部或顶部边界时返回 `MIN` 或 `MAX`。
+    /// @param tick tickLower 或 tickUpper。
+    /// @param tickSpacing 池 tick 间距。
+    /// @param baseCurrencyDecimals 基础货币小数位。
+    /// @param quoteCurrencyDecimals 报价货币小数位。
+    /// @param flipRatio 是否翻转默认 currency1/currency0 比率。
+    /// @return 价格比率字符串。
     function tickToDecimalString(
         int24 tick,
         int24 tickSpacing,
@@ -295,7 +295,7 @@ library Descriptor {
         if (roundUp) {
             value = value + 1;
         }
-        // 99999 -> 100000 gives an extra sigfig
+        // 99999 舍入到 100000 时会多出一位有效数字，需要单独调整。
         if (value == 100000) {
             value /= 10;
             extraDigit = true;
@@ -303,11 +303,11 @@ library Descriptor {
         return (value, extraDigit);
     }
 
-    /// @notice Adjusts the sqrt price for different currencies with different decimals
-    /// @param sqrtRatioX96 The sqrt price at a specific tick
-    /// @param baseCurrencyDecimals The decimals of the base currency
-    /// @param quoteCurrencyDecimals The decimals of the quote currency
-    /// @return adjustedSqrtRatioX96 The adjusted sqrt price
+    /// @notice 根据基础货币与报价货币的小数位差调整平方根价格。
+    /// @param sqrtRatioX96 指定 tick 的平方根价格。
+    /// @param baseCurrencyDecimals 基础货币小数位。
+    /// @param quoteCurrencyDecimals 报价货币小数位。
+    /// @return adjustedSqrtRatioX96 完成十进制尺度调整后的平方根价格。
     function adjustForDecimalPrecision(uint160 sqrtRatioX96, uint8 baseCurrencyDecimals, uint8 quoteCurrencyDecimals)
         private
         pure
@@ -331,9 +331,9 @@ library Descriptor {
         }
     }
 
-    /// @notice Absolute value of a signed integer
-    /// @param x The signed integer
-    /// @return The absolute value of x
+    /// @notice 返回有符号整数绝对值。
+    /// @param x 输入有符号整数。
+    /// @return x 的绝对值。
     function abs(int256 x) private pure returns (uint256) {
         return uint256(x >= 0 ? x : -x);
     }
@@ -349,24 +349,24 @@ library Descriptor {
 
         bool priceBelow1 = adjustedSqrtRatioX96 < 2 ** 96;
         if (priceBelow1) {
-            // 10 ** 43 is precision needed to retreive 5 sigfigs of smallest possible price + 1 for rounding
+            // 10 ** 43 提供读取最小可能价格 5 位有效数字所需精度，并额外保留 1 位用于舍入。
             value = FullMath.mulDiv(value, 10 ** 44, 1 << 128);
         } else {
-            // leave precision for 4 decimal places + 1 place for rounding
+            // 保留 4 位小数精度，并额外留 1 位用于舍入。
             value = FullMath.mulDiv(value, 10 ** 5, 1 << 128);
         }
 
-        // get digit count
+        // 计算整数数字位数。
         uint256 temp = value;
         uint8 digits;
         while (temp != 0) {
             digits++;
             temp /= 10;
         }
-        // don't count extra digit kept for rounding
+        // 不把为舍入额外保留的那一位计入结果。
         digits = digits - 1;
 
-        // address rounding
+        // 根据额外保留位执行四舍五入。
         (uint256 sigfigs, bool extraDigit) = sigfigsRounded(value, digits);
         if (extraDigit) {
             digits++;
@@ -374,19 +374,19 @@ library Descriptor {
 
         DecimalStringParams memory params;
         if (priceBelow1) {
-            // 7 bytes ( "0." and 5 sigfigs) + leading 0's bytes
+            // 7 字节（"0." 加 5 位有效数字）再加小数点后的前导零。
             params.bufferLength = uint8(uint8(7) + (uint8(43) - digits));
             params.zerosStartIndex = 2;
             params.zerosEndIndex = uint8(uint256(43) - digits + 1);
             params.sigfigIndex = uint8(params.bufferLength - 1);
         } else if (digits >= 9) {
-            // no decimal in price string
+            // 价格字符串不需要小数点。
             params.bufferLength = uint8(digits - 4);
             params.zerosStartIndex = 5;
             params.zerosEndIndex = uint8(params.bufferLength - 1);
             params.sigfigIndex = 4;
         } else {
-            // 5 sigfigs surround decimal
+            // 5 位有效数字分布在小数点两侧。
             params.bufferLength = 6;
             params.sigfigIndex = 5;
             params.decimalIndex = uint8(digits - 5 + 1);
@@ -398,9 +398,9 @@ library Descriptor {
         return generateDecimalString(params);
     }
 
-    /// @notice Converts fee amount in pips to decimal string with percent sign
-    /// @param fee fee amount
-    /// @return fee as a decimal string with percent sign
+    /// @notice 将以 pips 表示的费率转换为带百分号的十进制字符串。
+    /// @param fee 费率数值。
+    /// @return 带百分号的费率字符串。
     function feeToPercentString(uint24 fee) internal pure returns (string memory) {
         if (fee.isDynamicFee()) {
             return "Dynamic";
@@ -411,11 +411,10 @@ library Descriptor {
         uint24 temp = fee;
         uint256 digits;
         uint8 numSigfigs;
-        // iterates over each digit of fee by dividing temp by 10 in each iteration until temp becomes 0
-        // calculates number of digits and number of significant figures (non-zero digits)
+        // 反复除以 10 遍历费率各位，计算总位数和有效数字位数。
         while (temp != 0) {
             if (numSigfigs > 0) {
-                // count all digits preceding least significant figure
+                // 从最低非零有效位开始统计其前面的全部数字。
                 numSigfigs++;
             } else if (temp % 10 != 0) {
                 numSigfigs++;
@@ -427,8 +426,7 @@ library Descriptor {
         DecimalStringParams memory params;
         uint256 nZeros;
         if (digits >= 5) {
-            // represents fee greater than or equal to 1%
-            // if decimal > 1 (5th digit is the ones place)
+            // 表示费率大于或等于 1%；第 5 位是个位。
             uint256 decimalPlace = digits - numSigfigs >= 4 ? 0 : 1;
             nZeros = digits - 5 < numSigfigs - 1 ? 0 : digits - 5 - (numSigfigs - 1);
             params.zerosStartIndex = numSigfigs;
@@ -436,8 +434,7 @@ library Descriptor {
             params.sigfigIndex = uint8(params.zerosStartIndex - 1 + decimalPlace);
             params.bufferLength = uint8(nZeros + numSigfigs + 1 + decimalPlace);
         } else {
-            // represents fee less than 1%
-            // else if decimal < 1
+            // 表示费率小于 1%。
             nZeros = 5 - digits; // number of zeros, inlcuding the zero before decimal
             params.zerosStartIndex = 2; // leading zeros will start after the decimal point
             params.zerosEndIndex = uint8(nZeros + params.zerosStartIndex - 1); // end index for leading zeros
@@ -456,9 +453,9 @@ library Descriptor {
         return (uint256(uint160(addr))).toHexString(20);
     }
 
-    /// @notice Generates the SVG image for a Uniswap v4 NFT
-    /// @param params Parameters needed to generate the SVG image
-    /// @return svg The SVG image as a string
+    /// @notice 生成 Uniswap V4 仓位 NFT 的 SVG 图像。
+    /// @param params 生成图像所需的仓位和池参数。
+    /// @return svg SVG 字符串。
     function generateSVGImage(ConstructTokenURIParams memory params) internal pure returns (string memory svg) {
         SVG.SVGParams memory svgParams = SVG.SVGParams({
             quoteCurrency: addressToString(params.quoteCurrency),
@@ -487,11 +484,11 @@ library Descriptor {
         return SVG.generateSVG(svgParams);
     }
 
-    /// @notice Checks if the current price is within your position range, above, or below
-    /// @param tickLower The lower tick
-    /// @param tickUpper The upper tick
-    /// @param tickCurrent The current tick
-    /// @return 0 if the current price is within the position range, -1 if below, 1 if above
+    /// @notice 判断当前价格位于仓位区间内、区间上方还是区间下方。
+    /// @param tickLower 仓位下界 tick。
+    /// @param tickUpper 仓位上界 tick。
+    /// @param tickCurrent 当前 tick。
+    /// @return 区间内返回 0，低于区间返回 -1，高于区间返回 1。
     function overRange(int24 tickLower, int24 tickUpper, int24 tickCurrent) private pure returns (int8) {
         if (tickCurrent < tickLower) {
             return -1;

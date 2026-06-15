@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// @title Library for reverting with custom errors efficiently
-/// @notice Contains functions for reverting with custom errors with different argument types efficiently
-/// @dev To use this library, declare `using CustomRevert for bytes4;` and replace `revert CustomError()` with
+/// @title 高效触发 custom error 的工具库
+/// @notice 针对不同参数类型，以紧凑内存布局编码并触发 custom error。
+/// @dev 使用时声明 `using CustomRevert for bytes4;`，并把 `revert CustomError()` 替换为
 /// `CustomError.selector.revertWith()`
-/// @dev The functions may tamper with the free memory pointer but it is fine since the call context is exited immediately
+/// @dev 函数可能改动 free memory pointer，但随后会立即退出当前调用上下文，因此不会影响后续执行。
 library CustomRevert {
-    /// @dev ERC-7751 error for wrapping bubbled up reverts
+    /// @dev 用于包装并向上冒泡下层回滚信息的 ERC-7751 error。
     error WrappedError(address target, bytes4 selector, bytes reason, bytes details);
 
-    /// @dev Reverts with the selector of a custom error in the scratch space
+    /// @dev 在 scratch space 中写入 custom error selector 并回滚。
     function revertWith(bytes4 selector) internal pure {
         assembly ("memory-safe") {
             mstore(0, selector)
@@ -18,7 +18,7 @@ library CustomRevert {
         }
     }
 
-    /// @dev Reverts with a custom error with an address argument in the scratch space
+    /// @dev 在 scratch space 中编码带一个 address 参数的 custom error 并回滚。
     function revertWith(bytes4 selector, address addr) internal pure {
         assembly ("memory-safe") {
             mstore(0, selector)
@@ -27,7 +27,7 @@ library CustomRevert {
         }
     }
 
-    /// @dev Reverts with a custom error with an int24 argument in the scratch space
+    /// @dev 在 scratch space 中编码带一个 int24 参数的 custom error 并回滚。
     function revertWith(bytes4 selector, int24 value) internal pure {
         assembly ("memory-safe") {
             mstore(0, selector)
@@ -36,7 +36,7 @@ library CustomRevert {
         }
     }
 
-    /// @dev Reverts with a custom error with a uint160 argument in the scratch space
+    /// @dev 在 scratch space 中编码带一个 uint160 参数的 custom error 并回滚。
     function revertWith(bytes4 selector, uint160 value) internal pure {
         assembly ("memory-safe") {
             mstore(0, selector)
@@ -45,7 +45,7 @@ library CustomRevert {
         }
     }
 
-    /// @dev Reverts with a custom error with two int24 arguments
+    /// @dev 编码带两个 int24 参数的 custom error 并回滚。
     function revertWith(bytes4 selector, int24 value1, int24 value2) internal pure {
         assembly ("memory-safe") {
             let fmp := mload(0x40)
@@ -56,7 +56,7 @@ library CustomRevert {
         }
     }
 
-    /// @dev Reverts with a custom error with two uint160 arguments
+    /// @dev 编码带两个 uint160 参数的 custom error 并回滚。
     function revertWith(bytes4 selector, uint160 value1, uint160 value2) internal pure {
         assembly ("memory-safe") {
             let fmp := mload(0x40)
@@ -67,7 +67,7 @@ library CustomRevert {
         }
     }
 
-    /// @dev Reverts with a custom error with two address arguments
+    /// @dev 编码带两个 address 参数的 custom error 并回滚。
     function revertWith(bytes4 selector, address value1, address value2) internal pure {
         assembly ("memory-safe") {
             let fmp := mload(0x40)
@@ -78,8 +78,8 @@ library CustomRevert {
         }
     }
 
-    /// @notice bubble up the revert message returned by a call and revert with a wrapped ERC-7751 error
-    /// @dev this method can be vulnerable to revert data bombs
+    /// @notice 将外部调用返回的回滚信息向上冒泡，并包装为 ERC-7751 error 后回滚。
+    /// @dev 此方法可能受到 revert data bomb 影响：恶意目标可返回超大错误数据，导致复制数据消耗大量 gas。
     function bubbleUpAndRevertWith(
         address revertingContract,
         bytes4 revertingFunctionSelector,
@@ -87,29 +87,29 @@ library CustomRevert {
     ) internal pure {
         bytes4 wrappedErrorSelector = WrappedError.selector;
         assembly ("memory-safe") {
-            // Ensure the size of the revert data is a multiple of 32 bytes
+            // 将回滚数据占用空间向上对齐到 32 byte 的整数倍。
             let encodedDataSize := mul(div(add(returndatasize(), 31), 32), 32)
 
             let fmp := mload(0x40)
 
-            // Encode wrapped error selector, address, function selector, offset, additional context, size, revert reason
+            // 编码包装错误的 selector、目标地址、函数 selector、offset、附加上下文、长度与原始回滚原因。
             mstore(fmp, wrappedErrorSelector)
             mstore(add(fmp, 0x04), and(revertingContract, 0xffffffffffffffffffffffffffffffffffffffff))
             mstore(
                 add(fmp, 0x24),
                 and(revertingFunctionSelector, 0xffffffff00000000000000000000000000000000000000000000000000000000)
             )
-            // offset revert reason
+            // 回滚原因的 offset。
             mstore(add(fmp, 0x44), 0x80)
-            // offset additional context
+            // 附加上下文的 offset。
             mstore(add(fmp, 0x64), add(0xa0, encodedDataSize))
-            // size revert reason
+            // 回滚原因长度。
             mstore(add(fmp, 0x84), returndatasize())
-            // revert reason
+            // 原始回滚原因。
             returndatacopy(add(fmp, 0xa4), 0, returndatasize())
-            // size additional context
+            // 附加上下文长度。
             mstore(add(fmp, add(0xa4, encodedDataSize)), 0x04)
-            // additional context
+            // 附加上下文。
             mstore(
                 add(fmp, add(0xc4, encodedDataSize)),
                 and(additionalContext, 0xffffffff00000000000000000000000000000000000000000000000000000000)

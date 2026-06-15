@@ -5,25 +5,24 @@ import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 import {VanityAddressLib} from "./libraries/VanityAddressLib.sol";
 import {IUniswapV4DeployerCompetition} from "./interfaces/IUniswapV4DeployerCompetition.sol";
 
-/// @title UniswapV4DeployerCompetition
-/// @notice A contract to crowdsource a salt for the best Uniswap V4 address
+/// @title Uniswap V4 部署地址竞赛
+/// @notice 众包搜索 CREATE2 salt，以获得评分最高的 Uniswap V4 合约靓号地址，并按时限完成确定性部署。
 contract UniswapV4DeployerCompetition is IUniswapV4DeployerCompetition {
     using VanityAddressLib for address;
 
-    /// @dev The salt for the best address found so far
+    /// @dev 当前最高分地址对应的 salt。
     bytes32 public bestAddressSalt;
-    /// @dev The submitter of the best address found so far
+    /// @dev 当前最高分 salt 的提交者。
     address public bestAddressSubmitter;
 
-    /// @dev The deadline for the competition
+    /// @dev 接收更优 salt 的竞赛截止时间。
     uint256 public immutable competitionDeadline;
-    /// @dev The init code hash of the V4 contract
+    /// @dev 目标 V4 合约部署字节码的 init code hash。
     bytes32 public immutable initCodeHash;
 
-    /// @dev The deployer who can initiate the deployment of the v4 PoolManager, until the exclusive deploy deadline.
-    /// @dev After this deadline anyone can deploy.
+    /// @dev 在独占部署截止时间前，只有指定 deployer 可部署 V4 PoolManager；之后任何人都可代为部署。
     address public immutable deployer;
-    /// @dev The deadline for exclusive deployment by deployer after deadline
+    /// @dev 竞赛结束后指定 deployer 的独占部署截止时间。
     uint256 public immutable exclusiveDeployDeadline;
 
     constructor(
@@ -38,7 +37,9 @@ contract UniswapV4DeployerCompetition is IUniswapV4DeployerCompetition {
         deployer = _exclusiveDeployer;
     }
 
-    /// @inheritdoc IUniswapV4DeployerCompetition
+    /// @notice 若给定 salt 计算出的 CREATE2 地址评分更高，则更新当前最佳记录。
+    /// @param salt 用于计算目标地址的 CREATE2 salt。
+    /// @dev salt 前 20 字节必须为零地址或提交者地址，防止他人抢报与自己无关的搜索成果。
     function updateBestAddress(bytes32 salt) external {
         if (block.timestamp > competitionDeadline) {
             revert CompetitionOver(block.timestamp, competitionDeadline);
@@ -59,7 +60,9 @@ contract UniswapV4DeployerCompetition is IUniswapV4DeployerCompetition {
         emit NewAddressFound(newAddress, msg.sender, newAddress.score());
     }
 
-    /// @inheritdoc IUniswapV4DeployerCompetition
+    /// @notice 使用最佳 salt 部署目标 Uniswap V4 PoolManager 字节码。
+    /// @param bytecode 必须与构造时 `initCodeHash` 完全匹配的部署字节码。
+    /// @dev 竞赛结束后进入指定部署者独占期；独占期结束仍未部署时，任何人都可完成部署。
     function deploy(bytes memory bytecode) external {
         if (keccak256(bytecode) != initCodeHash) {
             revert InvalidBytecode();
@@ -70,15 +73,15 @@ contract UniswapV4DeployerCompetition is IUniswapV4DeployerCompetition {
         }
 
         if (msg.sender != deployer && block.timestamp <= exclusiveDeployDeadline) {
-            // anyone can deploy after the deadline
+            // 独占期结束后开放给任何地址部署，避免指定部署者失联导致永久阻塞。
             revert NotAllowedToDeploy(msg.sender, deployer);
         }
 
-        // the owner of the contract must be encoded in the bytecode
+        // 合约 owner 等构造参数必须已编码在 bytecode 中，本函数不会另行拼接参数。
         Create2.deploy(0, bestAddressSalt, bytecode);
     }
 
-    /// @dev returns the best address found so far
+    /// @dev 返回当前最佳 salt 与固定 initCodeHash 对应的 CREATE2 目标地址。
     function bestAddress() public view returns (address) {
         return Create2.computeAddress(bestAddressSalt, initCodeHash);
     }

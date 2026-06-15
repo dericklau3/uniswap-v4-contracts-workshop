@@ -1,26 +1,26 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// @title Math functions that do not check inputs or outputs
-/// @notice Contains methods that perform common math functions but do not do any overflow or underflow checks
+/// @title 不检查输入与输出边界的数学函数
+/// @notice 提供常用数学运算，但不执行溢出、下溢等安全检查；调用方必须自行保证前置条件。
 library UnsafeMath {
-    /// @notice Returns ceil(x / y)
-    /// @dev division by 0 will return 0, and should be checked externally
-    /// @param x The dividend
-    /// @param y The divisor
-    /// @return z The quotient, ceil(x / y)
+    /// @notice 返回 ceil(x / y)，即向上取整的商。
+    /// @dev 除以 0 会返回 0，调用方必须在外部检查除数。
+    /// @param x 被除数。
+    /// @param y 除数。
+    /// @return z 向上取整后的商 ceil(x / y)。
     function divRoundingUp(uint256 x, uint256 y) internal pure returns (uint256 z) {
         assembly ("memory-safe") {
             z := add(div(x, y), gt(mod(x, y), 0))
         }
     }
 
-    /// @notice Calculates floor(a×b÷denominator)
-    /// @dev division by 0 will return 0, and should be checked externally
-    /// @param a The multiplicand
-    /// @param b The multiplier
-    /// @param denominator The divisor
-    /// @return result The 256-bit result, floor(a×b÷denominator)
+    /// @notice 计算 floor(a×b÷denominator)。
+    /// @dev 除以 0 会返回 0，调用方必须在外部检查除数；乘法也不检查 256 bit 溢出。
+    /// @param a 被乘数。
+    /// @param b 乘数。
+    /// @param denominator 除数。
+    /// @return result 256 bit 结果 floor(a×b÷denominator)。
     function simpleMulDiv(uint256 a, uint256 b, uint256 denominator) internal pure returns (uint256 result) {
         assembly ("memory-safe") {
             result := div(mul(a, b), denominator)

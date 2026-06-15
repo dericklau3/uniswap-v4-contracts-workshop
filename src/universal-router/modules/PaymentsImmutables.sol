@@ -10,10 +10,10 @@ struct PaymentsParameters {
 }
 
 contract PaymentsImmutables {
-    /// @notice WETH9 address
+    /// @notice 用于 ETH 包装与解包的 WETH9 合约。
     IWETH9 internal immutable WETH9;
 
-    /// @notice Permit2 address
+    /// @notice 统一管理用户 ERC20 授权与批量转账的 Permit2 合约。
     IPermit2 internal immutable PERMIT2;
 
     constructor(PaymentsParameters memory params) {

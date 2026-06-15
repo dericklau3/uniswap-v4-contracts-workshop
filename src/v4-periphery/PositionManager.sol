@@ -95,8 +95,10 @@ import {IWETH9} from "./interfaces/external/IWETH9.sol";
 //                                     44444444444444444444444444444444444444444
 //                                              4444444444444444444
 
-/// @notice The PositionManager (PosM) contract is responsible for creating liquidity positions on v4.
-/// PosM mints and manages ERC721 tokens associated with each position.
+/// @notice PositionManager（简称 PosM）负责创建和管理 Uniswap V4 集中流动性仓位。
+/// 每个仓位由一个 ERC-721 凭证表示，NFT 所有权决定谁可以增减流动性、领取手续费、转让或销毁仓位。
+/// @dev PosM 自身是 `PoolManager` 中仓位的 owner，并使用 `tokenId` 作为 salt 隔离底层仓位状态；
+/// 用户持有的 NFT 则是外围层权限凭证。动作批处理会在同一解锁周期内修改仓位并结清所有货币 delta。
 contract PositionManager is
     IPositionManager,
     ERC721Permit_v4,
@@ -116,8 +118,9 @@ contract PositionManager is
     using CalldataDecoder for bytes;
     using SlippageCheck for BalanceDelta;
 
-    /// @inheritdoc IPositionManager
-    /// @dev The ID of the next token that will be minted. Skips 0
+    /// @notice 返回下一枚新流动性仓位 NFT 将使用的 token ID。
+    /// @return 下一枚 token ID。
+    /// @dev 从 1 开始并跳过 0，铸造时先取当前值再递增。
     uint256 public nextTokenId = 1;
 
     IPositionDescriptor public immutable tokenDescriptor;
@@ -141,24 +144,24 @@ contract PositionManager is
         tokenDescriptor = _tokenDescriptor;
     }
 
-    /// @notice Reverts if the deadline has passed
-    /// @param deadline The timestamp at which the call is no longer valid, passed in by the caller
+    /// @notice 校验批处理是否仍在用户允许的有效期内，过期则回退。
+    /// @param deadline 调用者指定的 Unix 时间戳；区块时间超过该值后交易失效。
     modifier checkDeadline(uint256 deadline) {
         if (block.timestamp > deadline) revert DeadlinePassed(deadline);
         _;
     }
 
-    /// @notice Reverts if the caller is not the owner or approved for the ERC721 token
-    /// @param caller The address of the caller
-    /// @param tokenId the unique identifier of the ERC721 token
-    /// @dev either msg.sender or msgSender() is passed in as the caller
-    /// msgSender() should ONLY be used if this is called from within the unlockCallback, unless the codepath has reentrancy protection
+    /// @notice 校验调用者是否为仓位 NFT 的所有者或已获 ERC-721 授权。
+    /// @param caller 要校验的调用者地址。
+    /// @param tokenId 仓位 NFT 的唯一标识。
+    /// @dev `caller` 可以是直接调用阶段的 `msg.sender`，也可以是回调阶段由 `msgSender()` 恢复的原始调用者。
+    /// 除非调用链已有重入保护，否则只能在 `unlockCallback` 内使用 `msgSender()`，以免读取到陈旧的 locker。
     modifier onlyIfApproved(address caller, uint256 tokenId) override {
         if (!_isApprovedOrOwner(caller, tokenId)) revert NotApproved(caller);
         _;
     }
 
-    /// @notice Enforces that the PoolManager is locked.
+    /// @notice 要求 `PoolManager` 当前处于锁定状态，避免仓位修改期间同时触发转让或订阅通知。
     modifier onlyIfPoolManagerLocked() override {
         if (poolManager.isUnlocked()) revert PoolManagerMustBeLocked();
         _;
@@ -168,7 +171,10 @@ contract PositionManager is
         return IPositionDescriptor(tokenDescriptor).tokenURI(this, tokenId);
     }
 
-    /// @inheritdoc IPositionManager
+    /// @notice 解锁 V4 `PoolManager`，并原子执行一组修改流动性及资金结算动作。
+    /// @dev 这是 PosM 的标准入口。`unlockData` 编码动作字节和逐动作参数，执行结束前所有负 delta 必须结清。
+    /// @param unlockData `(bytes actions, bytes[] params)` 的 ABI 编码。
+    /// @param deadline 本批动作允许执行的最后时间戳。
     function modifyLiquidities(bytes calldata unlockData, uint256 deadline)
         external
         payable
@@ -178,7 +184,10 @@ contract PositionManager is
         _executeActions(unlockData);
     }
 
-    /// @inheritdoc IPositionManager
+    /// @notice 在调用方已经解锁 `PoolManager` 的上下文中直接执行一组流动性动作。
+    /// @dev 仅应由掌控当前解锁周期的可信合约调用；本函数不会再次调用 `PoolManager.unlock`。
+    /// @param actions 按顺序执行的动作编号字节。
+    /// @param params 与每个动作一一对应的 ABI 编码参数。
     function modifyLiquiditiesWithoutUnlock(bytes calldata actions, bytes[] calldata params)
         external
         payable
@@ -187,7 +196,9 @@ contract PositionManager is
         _executeActionsWithoutUnlock(actions, params);
     }
 
-    /// @inheritdoc BaseActionsRouter
+    /// @notice 返回触发当前动作批次的原始调用者。
+    /// @dev 回调期间 `msg.sender` 是 `PoolManager`，因此从重入锁保存的 locker 中恢复用户地址。
+    /// @return 当前批次的原始调用者。
     function msgSender() public view override returns (address) {
         return _getLocker();
     }
@@ -200,7 +211,7 @@ contract PositionManager is
                 _increase(tokenId, liquidity, amount0Max, amount1Max, hookData);
                 return;
             } else if (action == Actions.INCREASE_LIQUIDITY_FROM_DELTAS) {
-                // DEPRECATED - vulnerable to sandwich attacks, do not use. See _increaseFromDeltas().
+                // 已弃用：按当前 delta 推导流动性会暴露三明治攻击面，请勿使用，详见 _increaseFromDeltas()。
                 (uint256 tokenId, uint128 amount0Max, uint128 amount1Max, bytes calldata hookData) =
                     params.decodeIncreaseLiquidityFromDeltasParams();
                 _increaseFromDeltas(tokenId, amount0Max, amount1Max, hookData);
@@ -224,7 +235,7 @@ contract PositionManager is
                 _mint(poolKey, tickLower, tickUpper, liquidity, amount0Max, amount1Max, _mapRecipient(owner), hookData);
                 return;
             } else if (action == Actions.MINT_POSITION_FROM_DELTAS) {
-                // DEPRECATED - vulnerable to sandwich attacks, do not use. See _mintFromDeltas().
+                // 已弃用：按当前 delta 推导流动性会暴露三明治攻击面，请勿使用，详见 _mintFromDeltas()。
                 (
                     PoolKey calldata poolKey,
                     int24 tickLower,
@@ -237,7 +248,7 @@ contract PositionManager is
                 _mintFromDeltas(poolKey, tickLower, tickUpper, amount0Max, amount1Max, _mapRecipient(owner), hookData);
                 return;
             } else if (action == Actions.BURN_POSITION) {
-                // Will automatically decrease liquidity to 0 if the position is not already empty.
+                // 若仓位仍有流动性，会先自动降至 0，再销毁 NFT。
                 (uint256 tokenId, uint128 amount0Min, uint128 amount1Min, bytes calldata hookData) =
                     params.decodeBurnParams();
                 _burn(tokenId, amount0Min, amount1Min, hookData);
@@ -285,7 +296,7 @@ contract PositionManager is
         revert UnsupportedAction(action);
     }
 
-    /// @dev Calling increase with 0 liquidity will credit the caller with any underlying fees of the position
+    /// @dev 增加 0 流动性仍会触发底层仓位记账，从而把已累积手续费记为调用方可领取的正 delta。
     function _increase(
         uint256 tokenId,
         uint256 liquidity,
@@ -295,16 +306,16 @@ contract PositionManager is
     ) internal virtual onlyIfApproved(msgSender(), tokenId) {
         (PoolKey memory poolKey, PositionInfo info) = getPoolAndPositionInfo(tokenId);
 
-        // Note: The tokenId is used as the salt for this position, so every minted position has unique storage in the pool manager.
+        // tokenId 同时作为底层仓位 salt，确保每枚 NFT 在 PoolManager 中拥有独立存储。
         (BalanceDelta liquidityDelta, BalanceDelta feesAccrued) =
             _modifyLiquidity(info, poolKey, liquidity.toInt256(), bytes32(tokenId), hookData);
-        // Slippage checks should be done on the principal liquidityDelta which is the liquidityDelta - feesAccrued
+        // 滑点只约束新增流动性的本金支出；应从总 delta 中扣除本次同步到的历史手续费。
         (liquidityDelta - feesAccrued).validateMaxIn(amount0Max, amount1Max);
     }
 
-    /// @notice DEPRECATED: Vulnerable to sandwich attacks - do not use this function.
-    /// @dev Same issue as _mintFromDeltas -- the delta-based approach provides no minimum
-    /// liquidity protection. Use _increase() instead.
+    /// @notice 已弃用：该按 delta 增仓方式容易遭受三明治攻击，请勿使用。
+    /// @dev 与 `_mintFromDeltas` 相同，它只限制代币最大支出，却没有最低流动性保护。
+    /// 攻击者可临时移动价格，使同样信用额只铸造更少流动性。应改用显式指定 `liquidity` 的 `_increase()`。
     function _increaseFromDeltas(uint256 tokenId, uint128 amount0Max, uint128 amount1Max, bytes calldata hookData)
         internal
         virtual
@@ -316,7 +327,7 @@ contract PositionManager is
         {
             (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolKey.toId());
 
-            // Use the credit on the pool manager as the amounts for the mint.
+            // 把 PoolManager 中两种货币的全部正 delta 当作本次增仓可用金额。
             liquidity = LiquidityAmounts.getLiquidityForAmounts(
                 sqrtPriceX96,
                 TickMath.getSqrtPriceAtTick(info.tickLower()),
@@ -326,14 +337,14 @@ contract PositionManager is
             );
         }
 
-        // Note: The tokenId is used as the salt for this position, so every minted position has unique storage in the pool manager.
+        // tokenId 作为 salt，使每枚 NFT 对应独立的底层仓位。
         (BalanceDelta liquidityDelta, BalanceDelta feesAccrued) =
             _modifyLiquidity(info, poolKey, liquidity.toInt256(), bytes32(tokenId), hookData);
-        // Slippage checks should be done on the principal liquidityDelta which is the liquidityDelta - feesAccrued
+        // 仅对本金支出检查滑点，排除同步手续费对 delta 的影响。
         (liquidityDelta - feesAccrued).validateMaxIn(amount0Max, amount1Max);
     }
 
-    /// @dev Calling decrease with 0 liquidity will credit the caller with any underlying fees of the position
+    /// @dev 减少 0 流动性仍可同步仓位已累积手续费，并把它们记为调用方可领取的正 delta。
     function _decrease(
         uint256 tokenId,
         uint256 liquidity,
@@ -343,10 +354,10 @@ contract PositionManager is
     ) internal onlyIfApproved(msgSender(), tokenId) {
         (PoolKey memory poolKey, PositionInfo info) = getPoolAndPositionInfo(tokenId);
 
-        // Note: the tokenId is used as the salt.
+        // 底层仓位使用 tokenId 作为 salt。
         (BalanceDelta liquidityDelta, BalanceDelta feesAccrued) =
             _modifyLiquidity(info, poolKey, -(liquidity.toInt256()), bytes32(tokenId), hookData);
-        // Slippage checks should be done on the principal liquidityDelta which is the liquidityDelta - feesAccrued
+        // 最低收款检查仅针对移除流动性返还的本金，不把历史手续费混入滑点判断。
         (liquidityDelta - feesAccrued).validateMinOut(amount0Min, amount1Min);
     }
 
@@ -360,37 +371,35 @@ contract PositionManager is
         address owner,
         bytes calldata hookData
     ) internal virtual {
-        // mint receipt token
+        // 先铸造代表仓位所有权和操作权限的 ERC-721 凭证。
         uint256 tokenId;
-        // tokenId is assigned to current nextTokenId before incrementing it
+        // 使用当前 nextTokenId，随后递增，为下一仓位预留新编号。
         unchecked {
             tokenId = nextTokenId++;
         }
         _mint(owner, tokenId);
 
-        // Initialize the position info
+        // 初始化并保存池标识、价格区间及订阅状态等压缩仓位信息。
         PositionInfo info = PositionInfoLibrary.initialize(poolKey, tickLower, tickUpper);
         positionInfo[tokenId] = info;
 
-        // Store the poolKey if it is not already stored.
-        // On UniswapV4, the minimum tick spacing is 1, which means that if the tick spacing is 0, the pool key has not been set.
+        // 同一池只保存一次完整 PoolKey，后续仓位通过压缩 poolId 复用。
+        // V4 合法 tickSpacing 最小为 1，因此 0 可安全作为“尚未写入”的哨兵值。
         bytes25 poolId = info.poolId();
         if (poolKeys[poolId].tickSpacing == 0) {
             poolKeys[poolId] = poolKey;
         }
 
-        // fee delta can be ignored as this is a new position
+        // 新仓位此前没有手续费快照，因此可忽略 feesAccrued，只校验实际投入本金的最大值。
         (BalanceDelta liquidityDelta,) =
             _modifyLiquidity(info, poolKey, liquidity.toInt256(), bytes32(tokenId), hookData);
         liquidityDelta.validateMaxIn(amount0Max, amount1Max);
     }
 
-    /// @notice DEPRECATED: Vulnerable to sandwich attacks - do not use this function.
-    /// @dev The amount0Max/amount1Max parameters are redundant because settled amounts already
-    /// act as an upper bound. There is no lower bound on liquidity received.
-    /// If the price is manipulated, fewer tokens are used (the rest are swept back),
-    /// less liquidity is minted, and the max check never triggers.
-    /// Use _mint() instead, which takes an explicit liquidity amount with proper slippage protection.
+    /// @notice 已弃用：该按 delta 铸仓方式容易遭受三明治攻击，请勿使用。
+    /// @dev 已结算到 PoolManager 的金额本身就是支出上限，所以 `amount0Max/amount1Max` 不能提供有效保护；
+    /// 同时用户没有声明最低应得流动性。价格被临时操纵后，合约可能只使用较少代币、退回余款，
+    /// 却也只铸造更少流动性，最大支出检查始终不会触发。应使用显式指定 `liquidity` 的 `_mint()`。
     function _mintFromDeltas(
         PoolKey calldata poolKey,
         int24 tickLower,
@@ -402,7 +411,7 @@ contract PositionManager is
     ) internal {
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolKey.toId());
 
-        // Use the credit on the pool manager as the amounts for the mint.
+        // 使用 PoolManager 中已有的两种货币信用额计算可铸造流动性。
         uint256 liquidity = LiquidityAmounts.getLiquidityForAmounts(
             sqrtPriceX96,
             TickMath.getSqrtPriceAtTick(tickLower),
@@ -414,7 +423,7 @@ contract PositionManager is
         _mint(poolKey, tickLower, tickUpper, liquidity, amount0Max, amount1Max, owner, hookData);
     }
 
-    /// @dev this is overloaded with ERC721Permit_v4._burn
+    /// @dev 本函数与 `ERC721Permit_v4._burn` 重载：此处负责完整退出底层流动性，再销毁 NFT。
     function _burn(uint256 tokenId, uint128 amount0Min, uint128 amount1Min, bytes calldata hookData)
         internal
         onlyIfApproved(msgSender(), tokenId)
@@ -425,16 +434,16 @@ contract PositionManager is
 
         address owner = ownerOf(tokenId);
 
-        // Clear the position info.
+        // 先清空外围仓位信息，避免后续回调继续把 NFT 视为有效仓位。
         positionInfo[tokenId] = PositionInfoLibrary.EMPTY_POSITION_INFO;
-        // Burn the token.
+        // 销毁代表仓位权限的 NFT。
         _burn(tokenId);
 
-        // Can only call modify if there is non zero liquidity.
+        // 仅在仍有流动性时调用底层移除；空仓位仍可直接销毁 NFT。
         BalanceDelta feesAccrued;
         if (liquidity > 0) {
             BalanceDelta liquidityDelta;
-            // do not use _modifyLiquidity as we do not need to notify on modification for burns.
+            // 销毁流程不发送普通 modify 通知，因此直接调用 PoolManager，最后单独发送 burn 通知。
             ModifyLiquidityParams memory params = ModifyLiquidityParams({
                 tickLower: info.tickLower(),
                 tickUpper: info.tickUpper(),
@@ -445,16 +454,16 @@ contract PositionManager is
             emit ModifyPosition(
                 poolKey.toId(), msgSender(), params.tickLower, params.tickUpper, params.liquidityDelta, params.salt
             );
-            // Slippage checks should be done on the principal liquidityDelta which is the liquidityDelta - feesAccrued
+            // 最低收款只约束退出本金，已累积手续费单独从总 delta 中扣除。
             (liquidityDelta - feesAccrued).validateMinOut(amount0Min, amount1Min);
         }
 
-        // deletes then notifies the subscriber
+        // 若存在订阅者，先删除订阅关系，再通知仓位已销毁，防止通知期间重复使用旧状态。
         if (info.hasSubscriber()) _removeSubscriberAndNotifyBurn(tokenId, owner, info, liquidity, feesAccrued);
     }
 
     function _settlePair(Currency currency0, Currency currency1) internal {
-        // the locker is the payer when settling
+        // 当前批次的 locker 是最终付款方，分别结清两种货币的全部负 delta。
         address caller = msgSender();
         _settle(currency0, caller, _getFullDebt(currency0));
         _settle(currency1, caller, _getFullDebt(currency1));
@@ -466,28 +475,26 @@ contract PositionManager is
     }
 
     function _close(Currency currency) internal {
-        // this address has applied all deltas on behalf of the user/owner
-        // it is safe to close this entire delta because of slippage checks throughout the batched calls.
+        // PosM 代表用户累计了整个批次的 delta；各业务动作已执行滑点检查，因此可在末尾安全关闭该货币的全部净额。
         int256 currencyDelta = poolManager.currencyDelta(address(this), currency);
 
-        // the locker is the payer or receiver
+        // locker 既可能需要补足负 delta，也可能接收正 delta。
         address caller = msgSender();
         if (currencyDelta < 0) {
-            // Casting is safe due to limits on the total supply of a pool
+            // 货币总供应量限制了 delta 范围，取负后转换为 uint256 是安全的。
             _settle(currency, caller, uint256(-currencyDelta));
         } else {
             _take(currency, caller, uint256(currencyDelta));
         }
     }
 
-    /// @dev integrators may elect to forfeit positive deltas with clear
-    /// if the forfeit amount exceeds the user-specified max, the amount is taken instead
-    /// if there is no credit, no call is made.
+    /// @dev 集成方可用 `clear` 主动放弃很小的正 delta，以避免领取零碎余额的成本。
+    /// 若信用额超过用户允许放弃的 `amountMax`，则改为全部领取；没有信用额时不发起外部调用。
     function _clearOrTake(Currency currency, uint256 amountMax) internal {
         uint256 delta = _getFullCredit(currency);
         if (delta == 0) return;
 
-        // forfeit the delta if its less than or equal to the user-specified limit
+        // 只有零碎信用额不超过用户上限时才放弃，否则完整转给原始调用者。
         if (delta <= amountMax) {
             poolManager.clear(currency, delta);
         } else {
@@ -495,13 +502,13 @@ contract PositionManager is
         }
     }
 
-    /// @notice Sweeps the entire contract balance of specified currency to the recipient
+    /// @notice 将本合约持有的指定货币全部扫转给收款人，用于处理批次结束后的外围余额。
     function _sweep(Currency currency, address to) internal virtual {
         uint256 balance = currency.balanceOfSelf();
         if (balance > 0) currency.transfer(to, balance);
     }
 
-    /// @dev if there is a subscriber attached to the position, this function will notify the subscriber
+    /// @dev 修改底层流动性后发出镜像事件；若仓位绑定订阅者，还会把流动性变化和手续费增量通知给订阅者。
     function _modifyLiquidity(
         PositionInfo info,
         PoolKey memory poolKey,
@@ -524,40 +531,45 @@ contract PositionManager is
         }
     }
 
-    // implementation of abstract function DeltaResolver._pay
+    // 实现 DeltaResolver._pay：自有余额直接转账，用户余额通过 Permit2 授权划转。
     function _pay(Currency currency, address payer, uint256 amount) internal virtual override {
         if (payer == address(this)) {
             currency.transfer(address(poolManager), amount);
         } else {
-            // Casting from uint256 to uint160 is safe due to limits on the total supply of a pool
+            // 单池可结算数量受代币总供应量限制，转换为 Permit2 使用的 uint160 是安全的。
             permit2.transferFrom(payer, address(poolManager), uint160(amount), Currency.unwrap(currency));
         }
     }
 
-    /// @notice an internal helper used by Notifier
+    /// @notice 供 `Notifier` 使用，在压缩仓位信息中设置“已订阅”标记。
     function _setSubscribed(uint256 tokenId) internal override {
         positionInfo[tokenId] = positionInfo[tokenId].setSubscribe();
     }
 
-    /// @notice an internal helper used by Notifier
+    /// @notice 供 `Notifier` 使用，在压缩仓位信息中清除“已订阅”标记。
     function _setUnsubscribed(uint256 tokenId) internal override {
         positionInfo[tokenId] = positionInfo[tokenId].setUnsubscribe();
     }
 
-    /// @dev overrides solmate transferFrom in case a notification to subscribers is needed
-    /// @dev will revert if pool manager is locked
+    /// @dev 覆盖 Solmate `transferFrom`：转让带订阅仓位时先取消订阅，避免旧订阅者继续收到新持有人的仓位数据。
+    /// `PoolManager` 已解锁时会回退，防止 hook 在仓位修改中途触发转让和通知。
     function transferFrom(address from, address to, uint256 id) public virtual override onlyIfPoolManagerLocked {
         super.transferFrom(from, to, id);
         if (positionInfo[id].hasSubscriber()) _unsubscribe(id);
     }
 
-    /// @inheritdoc IPositionManager
+    /// @notice 返回仓位 NFT 对应的完整池配置和压缩仓位信息。
+    /// @param tokenId 仓位 NFT 的 token ID。
+    /// @return poolKey 仓位所属 V4 池的完整键。
+    /// @return info 包含 poolId、tickLower、tickUpper 和订阅标志的压缩信息。
     function getPoolAndPositionInfo(uint256 tokenId) public view returns (PoolKey memory poolKey, PositionInfo info) {
         info = positionInfo[tokenId];
         poolKey = poolKeys[info.poolId()];
     }
 
-    /// @inheritdoc IPositionManager
+    /// @notice 返回仓位 NFT 当前在 `PoolManager` 中记录的流动性。
+    /// @param tokenId 仓位 NFT 的 token ID。
+    /// @return liquidity 仓位的流动性数量；可配合 `LiquidityAmounts` 换算为两种代币金额。
     function getPositionLiquidity(uint256 tokenId) external view returns (uint128 liquidity) {
         (PoolKey memory poolKey, PositionInfo info) = getPoolAndPositionInfo(tokenId);
         liquidity = _getLiquidity(tokenId, poolKey, info.tickLower(), info.tickUpper());

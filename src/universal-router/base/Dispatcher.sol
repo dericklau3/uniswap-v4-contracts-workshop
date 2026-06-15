@@ -18,8 +18,8 @@ import {PoolKey} from '@uniswap/v4-core/src/types/PoolKey.sol';
 import {IPoolManager} from '@uniswap/v4-core/src/interfaces/IPoolManager.sol';
 import {ChainedActions} from '../modules/ChainedActions.sol';
 
-/// @title Decodes and Executes Commands
-/// @notice Called by the UniversalRouter contract to efficiently decode and execute a singular command
+/// @title Universal Router 命令解码与分发器
+/// @notice 由 UniversalRouter 调用，以低 gas 的嵌套分支解码单字节命令，并转交给对应业务模块执行。
 abstract contract Dispatcher is
     Payments,
     V2SwapRouter,
@@ -35,37 +35,38 @@ abstract contract Dispatcher is
     error InvalidCommandType(uint256 commandType);
     error BalanceTooLow();
 
-    /// @notice Executes encoded commands along with provided inputs.
-    /// @param commands A set of concatenated commands, each 1 byte in length
-    /// @param inputs An array of byte strings containing abi encoded inputs for each command
+    /// @notice 执行拼接后的命令字节流及其逐项 ABI 编码输入。
+    /// @param commands 拼接后的命令集合，每条命令占 1 字节。
+    /// @param inputs 与命令索引一一对应的 ABI 编码参数数组。
     function execute(bytes calldata commands, bytes[] calldata inputs) external payable virtual;
 
-    /// @notice Public view function to be used instead of msg.sender, as the contract performs self-reentrancy and at
-    /// times msg.sender == address(this). Instead msgSender() returns the initiator of the lock
-    /// @dev overrides BaseActionsRouter.msgSender in V4Router
+    /// @notice 返回整条路由最初取得锁的调用者，用来代替可能失真的 `msg.sender`。
+    /// @dev 执行子计划时合约会自调用，此时 `msg.sender == address(this)`；本函数仍返回外层用户。
+    /// 同时覆盖 V4Router 中 `BaseActionsRouter.msgSender` 的实现，使 V4 action 也共享同一用户语义。
     function msgSender() public view override returns (address) {
         return _getLocker();
     }
 
-    /// @notice Decodes and executes the given command with the given inputs
-    /// @param commandType The command type to execute
-    /// @param inputs The inputs to execute the command with
-    /// @dev 2 masks are used to enable use of a nested-if statement in execution for efficiency reasons
-    /// @return success True on success of the command, false on failure
-    /// @return output The outputs or error messages, if any, from the command
+    /// @notice 解码一条命令及其输入，并调用对应的交换、支付、授权、迁移或跨链逻辑。
+    /// @param commandType 待执行的单字节命令；高位可携带允许失败标志，低 7 位表示命令类型。
+    /// @param inputs 该命令对应的 ABI 编码参数。
+    /// @dev 先用掩码提取命令类型，再按数值区间进入嵌套 `if`。这种布局与 `Commands` 常量分组一致，
+    /// 可减少逐项比较带来的 gas。低级解码只读取所需静态槽，动态 path/数组再由 BytesLib 定位。
+    /// @return success 命令是否成功；允许失败的外层逻辑可据此决定是否继续。
+    /// @return output 外部低级调用的返回数据或回滚信息；无返回数据的内部命令通常为空。
     function dispatch(bytes1 commandType, bytes calldata inputs) internal returns (bool success, bytes memory output) {
         uint256 command = uint8(commandType & Commands.COMMAND_TYPE_MASK);
 
         success = true;
 
-        // 0x00 <= command < 0x21
+        // 0x00 <= command < 0x21：内置交换、Permit2、支付、V4 与头寸迁移命令。
         if (command < Commands.EXECUTE_SUB_PLAN) {
-            // 0x00 <= command < 0x10
+            // 0x00 <= command < 0x10：V2/V3 swap、Permit2 和基础支付。
             if (command < Commands.V4_SWAP) {
-                // 0x00 <= command < 0x08
+                // 0x00 <= command < 0x08：V3 swap、Permit2 单笔转账/批量许可及余额支付。
                 if (command < Commands.V2_SWAP_EXACT_IN) {
                     if (command == Commands.V3_SWAP_EXACT_IN) {
-                        // equivalent: abi.decode(inputs, (address, uint256, uint256, bytes, bool, uint256[]))
+                        // 等价于：abi.decode(inputs, (address, uint256, uint256, bytes, bool, uint256[]))
                         address recipient;
                         uint256 amountIn;
                         uint256 amountOutMin;
@@ -74,7 +75,7 @@ abstract contract Dispatcher is
                             recipient := calldataload(inputs.offset)
                             amountIn := calldataload(add(inputs.offset, 0x20))
                             amountOutMin := calldataload(add(inputs.offset, 0x40))
-                            // 0x60 offset is the path, decoded below
+                            // 0x60 槽存放动态 path 的偏移量，稍后由 BytesLib 解码。
                             payerIsUser := calldataload(add(inputs.offset, 0x80))
                         }
                         bytes calldata path = inputs.toBytes(3);
@@ -82,7 +83,7 @@ abstract contract Dispatcher is
                         address payer = payerIsUser ? msgSender() : address(this);
                         v3SwapExactInput(map(recipient), amountIn, amountOutMin, path, payer, minHopPriceX36);
                     } else if (command == Commands.V3_SWAP_EXACT_OUT) {
-                        // equivalent: abi.decode(inputs, (address, uint256, uint256, bytes, bool, uint256[]))
+                        // 等价于：abi.decode(inputs, (address, uint256, uint256, bytes, bool, uint256[]))
                         address recipient;
                         uint256 amountOut;
                         uint256 amountInMax;
@@ -91,7 +92,7 @@ abstract contract Dispatcher is
                             recipient := calldataload(inputs.offset)
                             amountOut := calldataload(add(inputs.offset, 0x20))
                             amountInMax := calldataload(add(inputs.offset, 0x40))
-                            // 0x60 offset is the path, decoded below
+                            // 0x60 槽存放动态 path 的偏移量，稍后由 BytesLib 解码。
                             payerIsUser := calldataload(add(inputs.offset, 0x80))
                         }
                         bytes calldata path = inputs.toBytes(3);
@@ -99,7 +100,7 @@ abstract contract Dispatcher is
                         address payer = payerIsUser ? msgSender() : address(this);
                         v3SwapExactOutput(map(recipient), amountOut, amountInMax, path, payer, minHopPriceX36);
                     } else if (command == Commands.PERMIT2_TRANSFER_FROM) {
-                        // equivalent: abi.decode(inputs, (address, address, uint160))
+                        // 等价于：abi.decode(inputs, (address, address, uint160))
                         address token;
                         address recipient;
                         uint160 amount;
@@ -112,8 +113,7 @@ abstract contract Dispatcher is
                     } else if (command == Commands.PERMIT2_PERMIT_BATCH) {
                         IAllowanceTransfer.PermitBatch calldata permitBatch;
                         assembly {
-                            // this is a variable length struct, so calldataload(inputs.offset) contains the
-                            // offset from inputs.offset at which the struct begins
+                            // PermitBatch 是动态长度结构体；首槽保存它相对 `inputs.offset` 的起始偏移。
                             permitBatch := add(inputs.offset, calldataload(inputs.offset))
                         }
                         bytes calldata data = inputs.toBytes(1);
@@ -127,7 +127,7 @@ abstract contract Dispatcher is
                                 )
                             );
                     } else if (command == Commands.SWEEP) {
-                        // equivalent:  abi.decode(inputs, (address, address, uint256))
+                        // 等价于：abi.decode(inputs, (address, address, uint256))
                         address token;
                         address recipient;
                         uint160 amountMin;
@@ -138,7 +138,7 @@ abstract contract Dispatcher is
                         }
                         Payments.sweep(token, map(recipient), amountMin);
                     } else if (command == Commands.TRANSFER) {
-                        // equivalent:  abi.decode(inputs, (address, address, uint256))
+                        // 等价于：abi.decode(inputs, (address, address, uint256))
                         address token;
                         address recipient;
                         uint256 value;
@@ -149,7 +149,7 @@ abstract contract Dispatcher is
                         }
                         Payments.pay(token, map(recipient), value);
                     } else if (command == Commands.PAY_PORTION) {
-                        // equivalent:  abi.decode(inputs, (address, address, uint256))
+                        // 等价于：abi.decode(inputs, (address, address, uint256))
                         address token;
                         address recipient;
                         uint256 bips;
@@ -160,7 +160,7 @@ abstract contract Dispatcher is
                         }
                         Payments.payPortion(token, map(recipient), bips);
                     } else if (command == Commands.PAY_PORTION_FULL_PRECISION) {
-                        // equivalent:  abi.decode(inputs, (address, address, uint256))
+                        // 等价于：abi.decode(inputs, (address, address, uint256))
                         address token;
                         address recipient;
                         uint256 portion;
@@ -174,9 +174,9 @@ abstract contract Dispatcher is
                         revert InvalidCommandType(command);
                     }
                 } else {
-                    // 0x08 <= command < 0x10
+                    // 0x08 <= command < 0x10：V2 swap、Permit2 单笔许可、ETH/WETH 与余额检查。
                     if (command == Commands.V2_SWAP_EXACT_IN) {
-                        // equivalent: abi.decode(inputs, (address, uint256, uint256, address[], bool, uint256[]))
+                        // 等价于：abi.decode(inputs, (address, uint256, uint256, address[], bool, uint256[]))
                         address recipient;
                         uint256 amountIn;
                         uint256 amountOutMin;
@@ -185,7 +185,7 @@ abstract contract Dispatcher is
                             recipient := calldataload(inputs.offset)
                             amountIn := calldataload(add(inputs.offset, 0x20))
                             amountOutMin := calldataload(add(inputs.offset, 0x40))
-                            // 0x60 offset is the path, decoded below
+                            // 0x60 槽存放动态 address[] path 的偏移量，稍后解码。
                             payerIsUser := calldataload(add(inputs.offset, 0x80))
                         }
                         address[] calldata path = inputs.toAddressArray(3);
@@ -193,7 +193,7 @@ abstract contract Dispatcher is
                         address payer = payerIsUser ? msgSender() : address(this);
                         v2SwapExactInput(map(recipient), amountIn, amountOutMin, path, payer, minHopPriceX36);
                     } else if (command == Commands.V2_SWAP_EXACT_OUT) {
-                        // equivalent: abi.decode(inputs, (address, uint256, uint256, address[], bool, uint256[]))
+                        // 等价于：abi.decode(inputs, (address, uint256, uint256, address[], bool, uint256[]))
                         address recipient;
                         uint256 amountOut;
                         uint256 amountInMax;
@@ -202,7 +202,7 @@ abstract contract Dispatcher is
                             recipient := calldataload(inputs.offset)
                             amountOut := calldataload(add(inputs.offset, 0x20))
                             amountInMax := calldataload(add(inputs.offset, 0x40))
-                            // 0x60 offset is the path, decoded below
+                            // 0x60 槽存放动态 address[] path 的偏移量，稍后解码。
                             payerIsUser := calldataload(add(inputs.offset, 0x80))
                         }
                         address[] calldata path = inputs.toAddressArray(3);
@@ -210,12 +210,12 @@ abstract contract Dispatcher is
                         address payer = payerIsUser ? msgSender() : address(this);
                         v2SwapExactOutput(map(recipient), amountOut, amountInMax, path, payer, minHopPriceX36);
                     } else if (command == Commands.PERMIT2_PERMIT) {
-                        // equivalent: abi.decode(inputs, (IAllowanceTransfer.PermitSingle, bytes))
+                        // 等价于：abi.decode(inputs, (IAllowanceTransfer.PermitSingle, bytes))
                         IAllowanceTransfer.PermitSingle calldata permitSingle;
                         assembly {
                             permitSingle := inputs.offset
                         }
-                        bytes calldata data = inputs.toBytes(6); // PermitSingle takes first 6 slots (0..5)
+                        bytes calldata data = inputs.toBytes(6); // PermitSingle 占用前 6 个槽（0..5）。
                         (success, output) = address(PERMIT2)
                             .call(
                                 abi.encodeWithSignature(
@@ -226,7 +226,7 @@ abstract contract Dispatcher is
                                 )
                             );
                     } else if (command == Commands.WRAP_ETH) {
-                        // equivalent: abi.decode(inputs, (address, uint256))
+                        // 等价于：abi.decode(inputs, (address, uint256))
                         address recipient;
                         uint256 amount;
                         assembly {
@@ -235,7 +235,7 @@ abstract contract Dispatcher is
                         }
                         Payments.wrapETH(map(recipient), amount);
                     } else if (command == Commands.UNWRAP_WETH) {
-                        // equivalent: abi.decode(inputs, (address, uint256))
+                        // 等价于：abi.decode(inputs, (address, uint256))
                         address recipient;
                         uint256 amountMin;
                         assembly {
@@ -252,7 +252,7 @@ abstract contract Dispatcher is
                         }
                         permit2TransferFrom(batchDetails, msgSender());
                     } else if (command == Commands.BALANCE_CHECK_ERC20) {
-                        // equivalent: abi.decode(inputs, (address, address, uint256))
+                        // 等价于：abi.decode(inputs, (address, address, uint256))
                         address owner;
                         address token;
                         uint256 minBalance;
@@ -264,16 +264,16 @@ abstract contract Dispatcher is
                         success = (ERC20(token).balanceOf(owner) >= minBalance);
                         if (!success) output = abi.encodePacked(BalanceTooLow.selector);
                     } else {
-                        // placeholder area for command 0x0f
+                        // 0x0f 为预留命令位，当前不允许执行。
                         revert InvalidCommandType(command);
                     }
                 }
             } else {
-                // 0x10 <= command < 0x21
+                // 0x10 <= command < 0x21：V4 actions、V3/V4 PositionManager 与池初始化。
                 if (command == Commands.V4_SWAP) {
-                    // pass the calldata provided to V4SwapRouter._executeActions (defined in BaseActionsRouter)
+                    // 将原始 calldata 交给 BaseActionsRouter 定义的 `_executeActions`，按 V4 action 序列结算。
                     _executeActions(inputs);
-                    // This contract MUST be approved to spend the token since its going to be doing the call on the position manager
+                    // 调用 PositionManager 的主体是本路由器，因此用户必须事先授权本路由器操作对应 NFT。
                 } else if (command == Commands.V3_POSITION_MANAGER_PERMIT) {
                     _checkV3PermitCall(inputs);
                     (success, output) = address(V3_POSITION_MANAGER).call(inputs);
@@ -290,36 +290,38 @@ abstract contract Dispatcher is
                     (success, output) =
                         address(poolManager).call(abi.encodeCall(IPoolManager.initialize, (poolKey, sqrtPriceX96)));
                 } else if (command == Commands.V4_POSITION_MANAGER_CALL) {
-                    // should only call modifyLiquidities() to mint
+                    // 仅允许调用 `modifyLiquidities()`，并由迁移校验进一步限制为安全的 mint 流程。
                     _checkV4PositionManagerCall(inputs);
                     (success, output) = address(V4_POSITION_MANAGER).call{value: address(this).balance}(inputs);
                 } else {
-                    // placeholder area for commands 0x15-0x20
+                    // 0x15-0x20 为预留命令区间。
                     revert InvalidCommandType(command);
                 }
             }
         } else if (command < Commands.ACROSS_V4_DEPOSIT_V3) {
-            // 0x21 <= command
+            // 0x21 <= command < 0x40：子计划及后续内置扩展区间。
             if (command == Commands.EXECUTE_SUB_PLAN) {
                 (bytes calldata _commands, bytes[] calldata _inputs) = inputs.decodeCommandsAndInputs();
                 (success, output) = (address(this)).call(abi.encodeCall(Dispatcher.execute, (_commands, _inputs)));
             } else {
-                // placeholder area for commands 0x22-0x3f
+                // 0x22-0x3f 为预留命令区间。
                 revert InvalidCommandType(command);
             }
         } else {
             if (command == Commands.ACROSS_V4_DEPOSIT_V3) {
                 _acrossV4DepositV3(inputs);
             } else {
-                // placeholder area for commands 0x41-0x5f
+                // 0x41-0x5f 为第三方集成预留区间。
                 revert InvalidCommandType(command);
             }
         }
     }
 
-    /// @notice Calculates the recipient address for a command
-    /// @param recipient The recipient or recipient-flag for the command
-    /// @return output The resultant recipient for the command
+    /// @notice 将命令中的特殊接收者标志解析为实际地址。
+    /// @dev `MSG_SENDER` 映射到整条路由的原始用户，`ADDRESS_THIS` 映射到 Universal Router；
+    /// 普通地址保持不变。这样中间 hop 可先由路由器托管，最终输出再发送给用户。
+    /// @param recipient 命令指定的接收地址或特殊接收者标志。
+    /// @return output 解析后的实际接收地址。
     function map(address recipient) internal view returns (address) {
         if (recipient == ActionConstants.MSG_SENDER) {
             return msgSender();

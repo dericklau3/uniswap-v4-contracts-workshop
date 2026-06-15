@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-// Return type of the beforeSwap hook.
-// Upper 128 bits is the delta in specified tokens. Lower 128 bits is delta in unspecified tokens (to match the afterSwap hook)
+// beforeSwap hook 的返回差额类型。
+// 高 128 bit 是 specified token 的差额，低 128 bit 是 unspecified token 的差额，以便与 afterSwap hook 的表达方式一致。
 type BeforeSwapDelta is int256;
 
-// Creates a BeforeSwapDelta from specified and unspecified
+// 使用 specified 与 unspecified 两部分差额创建 BeforeSwapDelta。
 function toBeforeSwapDelta(int128 deltaSpecified, int128 deltaUnspecified)
     pure
     returns (BeforeSwapDelta beforeSwapDelta)
@@ -15,21 +15,19 @@ function toBeforeSwapDelta(int128 deltaSpecified, int128 deltaUnspecified)
     }
 }
 
-/// @notice Library for getting the specified and unspecified deltas from the BeforeSwapDelta type
+/// @notice 从 BeforeSwapDelta 中读取 specified 与 unspecified 差额的工具库。
 library BeforeSwapDeltaLibrary {
-    /// @notice A BeforeSwapDelta of 0
+    /// @notice 两部分差额都为 0 的 BeforeSwapDelta。
     BeforeSwapDelta public constant ZERO_DELTA = BeforeSwapDelta.wrap(0);
 
-    /// extracts int128 from the upper 128 bits of the BeforeSwapDelta
-    /// returned by beforeSwap
+    /// @notice 从 beforeSwap 返回的 BeforeSwapDelta 高 128 bit 提取 specified token 差额。
     function getSpecifiedDelta(BeforeSwapDelta delta) internal pure returns (int128 deltaSpecified) {
         assembly ("memory-safe") {
             deltaSpecified := sar(128, delta)
         }
     }
 
-    /// extracts int128 from the lower 128 bits of the BeforeSwapDelta
-    /// returned by beforeSwap and afterSwap
+    /// @notice 从 beforeSwap/afterSwap 返回值的低 128 bit 提取 unspecified token 差额。
     function getUnspecifiedDelta(BeforeSwapDelta delta) internal pure returns (int128 deltaUnspecified) {
         assembly ("memory-safe") {
             deltaUnspecified := signextend(15, delta)

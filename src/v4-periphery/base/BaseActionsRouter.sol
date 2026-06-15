@@ -7,30 +7,32 @@ import {CalldataDecoder} from "../libraries/CalldataDecoder.sol";
 import {ActionConstants} from "../libraries/ActionConstants.sol";
 import {IMsgSender} from "../interfaces/IMsgSender.sol";
 
-/// @notice Abstract contract for performing a combination of actions on Uniswap v4.
-/// @dev Suggested uint256 action values are defined in Actions.sol, however any definition can be used
+/// @notice 在一次 Uniswap V4 解锁周期内组合并执行多项操作的抽象路由基类。
+/// @dev `Actions.sol` 给出了推荐的 `uint256` 动作编号，但继承合约也可以定义自己的编号体系。
+/// 调用链通常为：外部入口组装 `actions + params`，本合约请求 `PoolManager.unlock`，
+/// 再由 `unlockCallback` 回调逐项分派。整个批次共享同一组瞬时货币 delta，便于把兑换、增减流动性和结算原子化。
 abstract contract BaseActionsRouter is IMsgSender, SafeCallback {
     using CalldataDecoder for bytes;
 
-    /// @notice emitted when different numbers of parameters and actions are provided
+    /// @notice 当动作数量与参数数组长度不一致时回退，避免动作读取到错误的参数。
     error InputLengthMismatch();
 
-    /// @notice emitted when an inheriting contract does not support an action
+    /// @notice 当继承合约不支持给定动作编号时回退。
     error UnsupportedAction(uint256 action);
 
     constructor(IPoolManager _poolManager) SafeCallback(_poolManager) {}
 
-    /// @notice internal function that triggers the execution of a set of actions on v4
-    /// @dev inheriting contracts should call this function to trigger execution
+    /// @notice 请求 `PoolManager` 解锁并触发一组 V4 动作。
+    /// @dev 继承合约的标准外部入口应调用本函数。实际动作会在 `PoolManager` 回调 `_unlockCallback` 时执行，
+    /// 因而执行期间 `msg.sender` 是 `PoolManager`，原始用户地址必须通过 `msgSender()` 恢复。
     function _executeActions(bytes calldata unlockData) internal {
         poolManager.unlock(unlockData);
     }
 
-    /// @notice function that is called by the PoolManager through the SafeCallback.unlockCallback
-    /// @param data Abi encoding of (bytes actions, bytes[] params)
-    /// where params[i] is the encoded parameters for actions[i]
+    /// @notice 由 `PoolManager` 经 `SafeCallback.unlockCallback` 调用，解码并执行整个动作批次。
+    /// @param data `(bytes actions, bytes[] params)` 的 ABI 编码；`params[i]` 是 `actions[i]` 对应的编码参数。
     function _unlockCallback(bytes calldata data) internal override returns (bytes memory) {
-        // abi.decode(data, (bytes, bytes[]));
+        // 与 abi.decode(data, (bytes, bytes[])) 等价，但直接返回 calldata 切片以减少复制和 gas。
         (bytes calldata actions, bytes[] calldata params) = data.decodeActionsRouterParams();
         _executeActionsWithoutUnlock(actions, params);
         return "";
@@ -47,17 +49,16 @@ abstract contract BaseActionsRouter is IMsgSender, SafeCallback {
         }
     }
 
-    /// @notice function to handle the parsing and execution of an action and its parameters
+    /// @notice 解析一个动作及其参数并执行；具体支持哪些动作由继承合约决定。
     function _handleAction(uint256 action, bytes calldata params) internal virtual;
 
-    /// @notice function that returns address considered executor of the actions
-    /// @dev The other context functions, _msgData and _msgValue, are not supported by this contract
-    /// In many contracts this will be the address that calls the initial entry point that calls `_executeActions`
-    /// `msg.sender` shouldn't be used, as this will be the v4 pool manager contract that calls `unlockCallback`
-    /// If using ReentrancyLock.sol, this function can return _getLocker()
+    /// @notice 返回在业务上被视为本批动作执行者的地址。
+    /// @dev 本合约不提供 `_msgData`、`_msgValue` 等其他上下文函数。通常该地址是调用外部入口并触发
+    /// `_executeActions` 的原始调用者；不能直接使用 `msg.sender`，因为回调阶段它是 V4 `PoolManager`。
+    /// 若继承合约使用 `ReentrancyLock.sol`，可通过 `_getLocker()` 返回已保存的原始调用者。
     function msgSender() public view virtual returns (address);
 
-    /// @notice Calculates the address for a action
+    /// @notice 将动作参数中的特殊收款人常量映射为原始调用者、本合约或显式地址。
     function _mapRecipient(address recipient) internal view returns (address) {
         if (recipient == ActionConstants.MSG_SENDER) {
             return msgSender();
@@ -68,7 +69,7 @@ abstract contract BaseActionsRouter is IMsgSender, SafeCallback {
         }
     }
 
-    /// @notice Calculates the payer for an action
+    /// @notice 根据动作参数决定付款方是原始用户还是当前路由合约。
     function _mapPayer(bool payerIsUser) internal view returns (address) {
         return payerIsUser ? msgSender() : address(this);
     }

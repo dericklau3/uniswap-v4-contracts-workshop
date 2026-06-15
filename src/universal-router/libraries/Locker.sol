@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.24;
 
-/// @notice A library to implement a reentrancy lock in transient storage.
-/// @dev Instead of storing a boolean, the locker's address is stored to allow the contract to know who locked the contract
-/// TODO: This library can be deleted when we have the transient keyword support in solidity.
+/// @notice 使用 transient storage 实现 Universal Router 的执行锁。
+/// @dev 不只保存布尔值，而是记录取得锁的外部调用者地址，使子计划自调用期间仍能恢复原始用户。
+/// TODO: Solidity 原生支持 transient 关键字后，可删除本库并改用语言级瞬态状态变量。
 library Locker {
-    // The slot holding the locker state, transiently. bytes32(uint256(keccak256("Locker")) - 1)
+    // 瞬态保存 locker 状态的槽位。bytes32(uint256(keccak256("Locker")) - 1)
     bytes32 constant LOCKER_SLOT = 0x0e87e1788ebd9ed6a7e63c70a374cd3283e41cad601d21fbe27863899ed4a708;
 
     function set(address locker) internal {
-        // The locker is always msg.sender or address(0) so does not need to be cleaned
+        // locker 始终是 `msg.sender` 或 `address(0)`，高位天然为零，无需额外清理槽数据。
         assembly ('memory-safe') {
             tstore(LOCKER_SLOT, locker)
         }
