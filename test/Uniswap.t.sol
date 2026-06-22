@@ -65,7 +65,7 @@ contract UniswapTest is Test {
     V4Quoter v4Quoter = V4Quoter(0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203);
 
     function setUp() public {
-        vm.createSelectFork("mainnet", 24532300);
+        vm.createSelectFork("mainnet", 25371532);
 
         (account, accountPrivateKey) = makeAddrAndKey("account");
 
@@ -139,7 +139,10 @@ contract UniswapTest is Test {
         vm.stopBroadcast();
     }
 
-    function _addLiquidityV4(address tokenA, address tokenB, uint256 tokenAAmount, uint256 tokenBAmount) internal {
+    function _addLiquidityV4(address tokenA, address tokenB, uint256 tokenAAmount, uint256 tokenBAmount)
+        internal
+        returns (PoolKey memory poolKey, uint128 mintedLiquidity, uint256 tokenId)
+    {
         // ETH 用 0x0000000000000000000000000000000000000000表示
         ERC20(tokenA).approve(address(permit2), type(uint256).max);
         ERC20(tokenB).approve(address(permit2), type(uint256).max);
@@ -156,7 +159,7 @@ contract UniswapTest is Test {
 
         // wrap: Currency c = Currency.wrap(tokenAddress);
         // unwrap: address a = Currency.unwrap(c);
-        PoolKey memory poolKey = PoolKey({
+        poolKey = PoolKey({
             currency0: Currency.wrap(token0),
             currency1: Currency.wrap(token1),
             fee: 3000,
@@ -183,9 +186,33 @@ contract UniswapTest is Test {
         // uint128 amount1Max,
         // address owner,
         // bytes calldata hookData
-        mintParams[0] = abi.encode(poolKey, tickLower, tickUpper, liquidity - 10000, uint128(amount0), uint128(amount1), account, new bytes(0));
+        mintedLiquidity = liquidity - 10000;
+        tokenId = positionManager.nextTokenId();
+        mintParams[0] =
+            abi.encode(poolKey, tickLower, tickUpper, mintedLiquidity, uint128(amount0), uint128(amount1), account, new bytes(0));
         mintParams[1] = abi.encode(poolKey.currency0, poolKey.currency1);
         positionManager.modifyLiquidities(abi.encode(actions, mintParams), block.timestamp + 30 minutes);
+    }
+
+    function testRemoveLiquidity() public {
+        vm.startBroadcast(account);
+        (PoolKey memory poolKey, uint128 liquidity, uint256 tokenId) =
+            _addLiquidityV4(address(weth), address(usdt), 10e18, 30000e18);
+
+        uint256 wethBalanceBefore = weth.balanceOf(account);
+        uint256 usdtBalanceBefore = usdt.balanceOf(account);
+
+        bytes memory actions = abi.encodePacked(uint8(Actions.DECREASE_LIQUIDITY), uint8(Actions.TAKE_PAIR));
+        bytes[] memory params = new bytes[](2);
+        params[0] = abi.encode(tokenId, liquidity, uint128(0), uint128(0), new bytes(0));
+        params[1] = abi.encode(poolKey.currency0, poolKey.currency1, account);
+
+        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 30 minutes);
+
+        assertEq(positionManager.getPositionLiquidity(tokenId), 0, "liquidity should be removed");
+        assertGt(weth.balanceOf(account), wethBalanceBefore, "WETH should be returned");
+        assertGt(usdt.balanceOf(account), usdtBalanceBefore, "USDT should be returned");
+        vm.stopBroadcast();
     }
 
     function testCreateHook() public {
@@ -349,6 +376,8 @@ contract UniswapTest is Test {
         console.log("eth -> usdc");
         console.log("amountOut: ", amountOut);
         console.log("gasEstimate: ", gasEstimate);
+        assertGt(amountOut, 0, "exact input single should quote output");
+        assertGt(gasEstimate, 0, "exact input single should estimate gas");
         
         address[] memory tokenPath = new address[](3);
         tokenPath[0] = btc;
@@ -359,6 +388,8 @@ contract UniswapTest is Test {
         console.log("btc -> usdc -> eth");
         console.log("amountOut: ", amountOut);
         console.log("gasEstimate: ", gasEstimate);
+        assertGt(amountOut, 0, "exact input path should quote output");
+        assertGt(gasEstimate, 0, "exact input path should estimate gas");
         
         (uint256 amountIn, uint256 exactOutGasEstimate) = v4Quoter.quoteExactOutputSingle(IV4Quoter.QuoteExactSingleParams({
             poolKey: ethUsdcKey,
@@ -369,11 +400,15 @@ contract UniswapTest is Test {
         console.log("eth -> usdc");
         console.log("amountIn: ", amountIn);
         console.log("gasEstimate: ", exactOutGasEstimate);
+        assertGt(amountIn, 0, "exact output single should quote input");
+        assertGt(exactOutGasEstimate, 0, "exact output single should estimate gas");
 
         (amountIn, gasEstimate) = v4Quoter.quoteExactOutput(getExactOutputParams(tokenPath, 3e18));
         console.log("btc -> usdc -> eth");
         console.log("amountIn: ", amountIn);
         console.log("gasEstimate: ", gasEstimate);
+        assertGt(amountIn, 0, "exact output path should quote input");
+        assertGt(gasEstimate, 0, "exact output path should estimate gas");
     }
 
     function createPoolKey(address tokenA, address tokenB, address hookAddr)
