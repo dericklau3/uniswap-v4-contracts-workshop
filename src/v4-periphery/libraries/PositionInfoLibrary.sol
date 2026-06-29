@@ -88,7 +88,7 @@ library PositionInfoLibrary {
     /// @return info 包含截断 poolId、上下 tick 和 false 订阅标志的压缩值。
     function initialize(PoolKey memory _poolKey, int24 _tickLower, int24 _tickUpper)
         internal
-        pure
+        pure 
         returns (PositionInfo info)
     {
         bytes25 _poolId = bytes25(PoolId.unwrap(_poolKey.toId()));

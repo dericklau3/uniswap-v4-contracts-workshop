@@ -380,6 +380,7 @@ contract PositionManager is
         _mint(owner, tokenId);
 
         // 初始化并保存池标识、价格区间及订阅状态等压缩仓位信息。
+        // type PositionInfo is uint256;
         PositionInfo info = PositionInfoLibrary.initialize(poolKey, tickLower, tickUpper);
         positionInfo[tokenId] = info;
 

@@ -89,8 +89,10 @@ contract PoolManager is IPoolManager, ProtocolFees, NoDelegateCall, ERC6909Claim
     using CurrencyReserves for Currency;
     using CustomRevert for bytes4;
 
+    // 1
     int24 private constant MAX_TICK_SPACING = TickMath.MAX_TICK_SPACING;
 
+    // type(int16).max
     int24 private constant MIN_TICK_SPACING = TickMath.MIN_TICK_SPACING;
 
     mapping(PoolId id => Pool.State) internal _pools;
@@ -130,6 +132,7 @@ contract PoolManager is IPoolManager, ProtocolFees, NoDelegateCall, ERC6909Claim
     /// @return tick 与初始价格对应的 tick。
     function initialize(PoolKey memory key, uint160 sqrtPriceX96) external noDelegateCall returns (int24 tick) {
         // tickSpacing 过大会使 TickBitmap 的压缩 tick 计算溢出，具体边界推导见 TickBitmap。
+        // [1, 32767]
         if (key.tickSpacing > MAX_TICK_SPACING) TickSpacingTooLarge.selector.revertWith(key.tickSpacing);
         if (key.tickSpacing < MIN_TICK_SPACING) TickSpacingTooSmall.selector.revertWith(key.tickSpacing);
         if (key.currency0 >= key.currency1) {
@@ -137,14 +140,20 @@ contract PoolManager is IPoolManager, ProtocolFees, NoDelegateCall, ERC6909Claim
                 Currency.unwrap(key.currency0), Currency.unwrap(key.currency1)
             );
         }
+        // Hooks.isValidHookAddress 验证hook地址+fee 是否合法
         if (!key.hooks.isValidHookAddress(key.fee)) Hooks.HookAddressNotValid.selector.revertWith(address(key.hooks));
 
+        // 获取LP fee，动态费率池初始化时费率为 0
         uint24 lpFee = key.fee.getInitialLPFee();
 
+        // 调用hooks的beforeInitialize，允许hook在建池前做一些校验或记录
         key.hooks.beforeInitialize(key, sqrtPriceX96);
 
+        // poolId = keccak256(abi.encode(poolKey))，PoolKey 由 5 个 32 byte 槽位组成，总长度为 0xa0。
+        // PoolId.toId()
         PoolId id = key.toId();
 
+        // 初始化池子状态，包括设置初始价格，lp fee，并返回sqrtPriceX96对应的tick
         tick = _pools[id].initialize(sqrtPriceX96, lpFee);
 
         // 先发事件再调用 afterInitialize，确保链上日志始终按照“核心状态变化 -> 后置 Hook”的顺序出现。
@@ -174,6 +183,7 @@ contract PoolManager is IPoolManager, ProtocolFees, NoDelegateCall, ERC6909Claim
         PoolId id = key.toId();
         {
             Pool.State storage pool = _getPool(id);
+            // 检查池子是否已初始化，未初始化的池子无法增减流动性。
             pool.checkPoolInitialized();
 
             key.hooks.beforeModifyLiquidity(key, params, hookData);
@@ -201,6 +211,16 @@ contract PoolManager is IPoolManager, ProtocolFees, NoDelegateCall, ERC6909Claim
         (callerDelta, hookDelta) = key.hooks.afterModifyLiquidity(key, params, callerDelta, feesAccrued, hookData);
 
         // 只有声明了“可返回增减额”权限的 Hook 才能产生 hookDelta，否则 Hooks 库保证它恒为零。
+        // hookDelta 表示 Hook 自己相对池子的两币种账面增减额，而不是用户的增减额。
+        // 典型业务场景：
+        // - Hook 对加仓收服务费：hookDelta 为正，表示池子欠 Hook，调用方的 callerDelta 已被扣掉这部分；
+        // - Hook 补贴用户或替用户承担一部分成本：hookDelta 为负，表示 Hook 欠池子，调用方少付或多收；
+        // - Hook 没有 return-delta 权限或本次不收费/不补贴：hookDelta 为 0。
+        //
+        // 非零时必须把这笔账记到 Hook 合约地址名下，因为 unlock 结束前，Hook 也要像普通用户一样
+        // 通过 settle/take 把自己的债权债务结清。若这里不单独记账，Hook 返回的费用或补贴只会改变
+        // callerDelta，却不会在 Hook 账户下留下待结算记录，闪电记账就无法守住“所有资产净额平衡”的约束。
+        // 为 0 时跳过调用只是省 gas：_accountPoolBalanceDelta 最终也会忽略 0 delta。
         if (hookDelta != BalanceDeltaLibrary.ZERO_DELTA) _accountPoolBalanceDelta(key, hookDelta, address(key.hooks));
 
         _accountPoolBalanceDelta(key, callerDelta, msg.sender);
@@ -251,6 +271,15 @@ contract PoolManager is IPoolManager, ProtocolFees, NoDelegateCall, ERC6909Claim
         (swapDelta, hookDelta) = key.hooks.afterSwap(key, params, swapDelta, hookData, beforeSwapDelta);
 
         // 未开启返回增减额权限时 hookDelta 必为零；非零时将其记在 Hook 合约自己的账上。
+        // afterSwap 的 hookDelta 只可能影响“非指定币种”一侧，Hooks.afterSwap 会把它转换成
+        // currency0/currency1 形式的 BalanceDelta。业务上它常用于：
+        // - Hook 从换币结果中抽取额外费用；
+        // - Hook 给交易者返佣、补贴或做外部激励；
+        // - Hook 根据 beforeSwap 记录的业务数据，在成交后再调整一小部分输出/输入。
+        //
+        // 这笔 delta 的归属方是 Hook 合约，不是交易者。PoolManager 先把 Hook 自己的增减额记到
+        // address(key.hooks)，再把最终 swapDelta 记到 msg.sender，这样用户和 Hook 会分别在同一个
+        // unlock 会话里结算各自的债务或应收。若 hookDelta 为 0，则没有额外 Hook 账目需要记录。
         if (hookDelta != BalanceDeltaLibrary.ZERO_DELTA) _accountPoolBalanceDelta(key, hookDelta, address(key.hooks));
 
         _accountPoolBalanceDelta(key, swapDelta, msg.sender);
@@ -323,6 +352,10 @@ contract PoolManager is IPoolManager, ProtocolFees, NoDelegateCall, ERC6909Claim
     /// 直接确定支付量，无需保存余额；传入原生币还可清除先前尚未结算的 ERC20 检查点。
     /// @param currency 即将用于结算的币种。
     function sync(Currency currency) external {
+
+        // 在用户准备给 PoolManager 支付某个 ERC20 之前，先记录 PoolManager 当前持有多少这个 token。后面用户转账进来，
+        // 再通过 settle() 计算“到底新到账了多少”。
+
         // address(0) 代表原生币。
         if (currency.isAddressZero()) {
             // 原生币不依赖 ERC20 balanceOf 差值，只需清除当前同步币种，避免沿用旧检查点。
@@ -435,24 +468,52 @@ contract PoolManager is IPoolManager, ProtocolFees, NoDelegateCall, ERC6909Claim
     }
 
     /// @notice 为目标地址累计某币种的临时增减额，并维护全局未结清项计数。
-    /// @dev 正值表示管理器欠目标地址，负值表示目标地址欠管理器。只有从零变为非零或从非零归零时，
-    /// 才调整 `NonzeroDeltaCount`，从而让 `unlock` 能以常数成本判断全部账目是否结清。
+    /// @dev V4 的核心资金模型是“先记账、后结算”。swap、增减流动性、donate、mint/burn、
+    /// take/settle 等操作不会立刻要求每一步都完成 ERC20/native 转账，而是在本次 `unlock`
+    /// 会话里把每个地址、每个币种的净额暂存在 transient storage 中。
+    ///
+    /// 正值表示管理器欠目标地址：例如用户 swap 后应收到输出币，或 LP 减仓后应取回本金/手续费；
+    /// 目标地址之后可以调用 `take` 提走资产，或用 `clear` 放弃小额尘埃。
+    ///
+    /// 负值表示目标地址欠管理器：例如用户加仓需要支付 token，或 swap 需要支付输入币；
+    /// 目标地址之后必须调用 `settle`/`settleFor` 把资产转入管理器，或用其他操作抵消这笔负债。
+    ///
+    /// `NonzeroDeltaCount` 只统计“仍未结清的 address+currency 组合数量”。只有从零变为非零或从
+    /// 非零归零时才调整计数，这样 `unlock` 结束时不用遍历全部用户和币种，只需要检查计数是否为 0。
+    /// 这也是闪电记账能支持复杂多步组合操作的关键：中途可以欠款或应收，但离开 unlock 前必须清零。
     /// @param currency 发生记账的币种。
     /// @param delta 本次追加的有符号增减量。
     /// @param target 被记账的地址。
     function _accountDelta(Currency currency, int128 delta, address target) internal {
+        // 0 delta 不改变任何地址的债权债务，也不会影响未结清项数量，直接返回可以减少一次 tload/tstore。
         if (delta == 0) return;
 
+        // CurrencyDelta.applyDelta 等价于：
+        // deltas[target][currency] = deltas[target][currency] + delta
+        // 但它写入的是 transient storage，交易结束会自动清空，不会长期占用合约 storage。
         (int256 previous, int256 next) = currency.applyDelta(target, delta);
 
+        // 如果本次记账后余额归零，说明该 address+currency 的债权债务已经完全抵消或结清。
         if (next == 0) {
             NonzeroDeltaCount.decrement();
+        // 如果本次记账前为 0、之后非 0，说明出现了一项新的待结算账目。
         } else if (previous == 0) {
             NonzeroDeltaCount.increment();
         }
     }
 
     /// @notice 将一个池的 currency0 与 currency1 增减额同时记到目标地址名下。
+    /// @dev BalanceDelta 是池操作返回的“两币种净额包”：amount0 对应 PoolKey.currency0，
+    /// amount1 对应 PoolKey.currency1。Pool.swap、Pool.modifyLiquidity、Pool.donate 只关心
+    /// 这个池里的两种资产，所以外层管理器要把它拆成两笔单币种账目写入闪电记账系统。
+    ///
+    /// 业务上可以把本函数理解成“把某次池操作的结果过账到某个账户”：
+    /// - target 是 msg.sender 时，表示用户这次换币、加仓、减仓或捐赠产生的净应收/应付；
+    /// - target 是 Hook 地址时，表示 Hook 通过 return-delta 权限从用户结果中抽成或提供补贴；
+    /// - 正数代表 target 可以从管理器拿走对应币种，负数代表 target 必须向管理器补入对应币种。
+    ///
+    /// 这里不直接转 token，只调用 `_accountDelta` 写入临时账本；真正的资金流动由同一 unlock 会话中的
+    /// `take`、`settle`、`mint`、`burn` 或后续抵消操作完成。
     /// @param key 用于确定两种币种的池配置。
     /// @param delta 已打包的两币种增减额。
     /// @param target 被记账的地址。

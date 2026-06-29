@@ -140,8 +140,11 @@ library Pool {
     }
 
     /// @notice 修改池中的一个仓位，并结算该仓位自上次更新以来的手续费。
-    /// @dev PoolManager 在调用前检查池已初始化。本函数依次更新边界 tick、bitmap、仓位手续费快照，
-    ///      再根据当前价格位于区间下方、区间内或区间上方，计算 LP 应支付/收回的资产。
+    /// @dev PoolManager 在调用前检查池已初始化。本函数是“增仓、减仓、只领取手续费”的核心账本：
+    ///      1. 先维护上下边界 tick，让 swap 以后跨越边界时知道活跃流动性如何变化；
+    ///      2. 再用当前区间内 fee growth 结算旧流动性已经赚到的手续费；
+    ///      3. 最后按当前价格相对仓位区间的位置，计算本次增减流动性需要支付或收回多少本金。
+    ///      注意：本金 delta 与手续费 feeDelta 分开返回，PoolManager 会把二者合并到账户的最终余额变化里。
     /// @param params 仓位详情与要应用的流动性变化。
     /// @return delta 流动性变化导致的池 token 余额差额。
     /// @return feeDelta 该流动性区间已累计、应结算给仓位的手续费。
@@ -152,17 +155,27 @@ library Pool {
         int128 liquidityDelta = params.liquidityDelta;
         int24 tickLower = params.tickLower;
         int24 tickUpper = params.tickUpper;
+        // 业务上一个 LP 仓位必须是“从较低价格到较高价格”的区间。
+        // tickLower/tickUpper 反了或越出 TickMath 支持范围时，后续的价格区间和手续费 inside/outside
+        // 推导都会失去意义，所以一进入函数就先校验。
         checkTicks(tickLower, tickUpper);
 
         {
             ModifyLiquidityState memory state;
 
             // 只有流动性实际变化时才需要更新上下边界 tick。
+            // 若 liquidityDelta == 0，本次操作只是“poke/collect”：不改变仓位大小，只把已赚手续费结算出来。
             if (liquidityDelta != 0) {
+                // 下边界记录“价格从左向右穿过 tickLower 时，活跃流动性增加多少”；
+                // 上边界记录“价格从左向右穿过 tickUpper 时，活跃流动性减少多少”。
+                // 这两个边界相当于给 swap 路径埋下两块路标，未来价格穿越时 Pool.crossTick 会据此调整
+                // self.liquidity，而不是每次 swap 都遍历所有用户仓位。
                 (state.flippedLower, state.liquidityGrossAfterLower) =
                     updateTick(self, tickLower, liquidityDelta, false);
                 (state.flippedUpper, state.liquidityGrossAfterUpper) = updateTick(self, tickUpper, liquidityDelta, true);
 
+                // 新增流动性时，检查单个 tick 上挂靠的总流动性不能超过安全上限。
+                // 这个限制防止大量仓位集中到同一个 tick 后，在跨 tick 或手续费计算中触发 uint128/int128 溢出。
                 // 此处 `>` 与 `>=` 在逻辑上等价，但 `>=` 更省 gas。
                 if (liquidityDelta >= 0) {
                     uint128 maxLiquidityPerTick = tickSpacingToMaxLiquidityPerTick(params.tickSpacing);
@@ -174,6 +187,9 @@ library Pool {
                     }
                 }
 
+                // flipped 表示该 tick 在“没有任何仓位引用”和“至少有一个仓位引用”之间切换。
+                // bitmap 只关心哪些 tick 已初始化，swap 查找下一个边界时会靠它快速跳转；
+                // 如果不同步翻转 bitmap，swap 可能漏掉边界或扫描到已经无效的边界。
                 if (state.flippedLower) {
                     self.tickBitmap.flipTick(tickLower, params.tickSpacing);
                 }
@@ -183,10 +199,18 @@ library Pool {
             }
 
             {
+                // feeGrowthInside 是“该价格区间内，每 1 单位流动性累计赚过多少手续费”。
+                // 它不是直接存一份区间累计值，而是通过全局 feeGrowth 与上下边界的 outside feeGrowth 推导出来：
+                // 当前价格在区间内时，用 global - lowerOutside - upperOutside；
+                // 当前价格在区间外时，两个 outside 值的差就能还原这个区间历史上赚过的部分。
                 (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) =
                     getFeeGrowthInside(self, tickLower, tickUpper);
 
+                // owner + tickLower + tickUpper + salt 唯一定位一个 LP 仓位。
+                // salt 允许同一个 owner 在同一价格区间开多个独立仓位，便于 NFT/订单层分开管理。
                 Position.State storage position = self.positions.get(params.owner, tickLower, tickUpper, params.salt);
+                // Position.update 先用“更新前的流动性”结算历史手续费，再应用 liquidityDelta 并刷新快照。
+                // 因此新增流动性不会白拿过去的手续费，减少流动性也能在退出前拿到自己已经赚到的部分。
                 (uint256 feesOwed0, uint256 feesOwed1) =
                     position.update(liquidityDelta, feeGrowthInside0X128, feeGrowthInside1X128);
 
@@ -195,6 +219,8 @@ library Pool {
             }
 
             // 移除流动性后，若某边界已无任何仓位引用，则清理其 tick 数据。
+            // 只在 liquidityDelta < 0 时清理，是因为新增流动性导致 flipped 时代表 tick 从空变为非空，
+            // 这些 tick 数据正是新仓位未来结算和跨越时需要保留的账本。
             if (liquidityDelta < 0) {
                 if (state.flippedLower) {
                     clearTick(self, tickLower);
@@ -211,6 +237,8 @@ library Pool {
             if (tick < tickLower) {
                 // 当前 tick 低于仓位区间。价格只有从左向右上涨后该流动性才会进入活跃区间；
                 // 此时仓位完全由 currency0 构成，因此新增流动性只需用户提供 currency0。
+                // 可以把它理解成 LP 在当前价下方“挂了一个尚未成交的买入区间”：等价格涨进区间，
+                // 这部分 currency0 才会逐步换成 currency1 并参与做市。
                 delta = toBalanceDelta(
                     SqrtPriceMath.getAmount0Delta(
                         TickMath.getSqrtPriceAtTick(tickLower), TickMath.getSqrtPriceAtTick(tickUpper), liquidityDelta
@@ -218,6 +246,11 @@ library Pool {
                     0
                 );
             } else if (tick < tickUpper) {
+                // 当前价格落在仓位区间内，新增/移除的流动性会立刻成为活跃流动性。
+                // 区间内仓位同时持有两种 currency：
+                // - 当前价到上边界这一段，用 currency0 表示还未被换出的部分；
+                // - 下边界到当前价这一段，用 currency1 表示已经按价格曲线换入的部分。
+                // 所以这里分别用当前 sqrtPrice 到上下边界的距离计算 amount0 和 amount1。
                 delta = toBalanceDelta(
                     SqrtPriceMath.getAmount0Delta(sqrtPriceX96, TickMath.getSqrtPriceAtTick(tickUpper), liquidityDelta)
                         .toInt128(),
@@ -225,10 +258,14 @@ library Pool {
                         .toInt128()
                 );
 
+                // 只有当前价格在仓位区间内时，这个仓位才参与当前 swap 的报价与手续费分摊；
+                // 因此只有这种情况需要同步更新池级别的 active liquidity。
                 self.liquidity = LiquidityMath.addDelta(self.liquidity, liquidityDelta);
             } else {
                 // 当前 tick 高于仓位区间。价格只有从右向左下跌后该流动性才会进入活跃区间；
                 // 此时仓位完全由 currency1 构成，因此新增流动性只需用户提供 currency1。
+                // 可以把它理解成 LP 在当前价上方“挂了一个尚未成交的卖出区间”：等价格跌回区间，
+                // 这部分 currency1 才会逐步换成 currency0 并重新参与做市。
                 delta = toBalanceDelta(
                     0,
                     SqrtPriceMath.getAmount1Delta(
